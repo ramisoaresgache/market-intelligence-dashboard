@@ -94,7 +94,7 @@ function reduceEvent(
       order_books: upsert(snapshot.order_books, book, (item) => item.exchange),
     });
   }
-  if (event.type === "metrics.update" || event.type === "ticker.update") {
+  if (event.type === "metrics.update") {
     const metric = event.data as MarketMetrics;
     return replaceSnapshot(current, snapshot, {
       metrics: upsert(snapshot.metrics, metric, (item) => item.exchange),

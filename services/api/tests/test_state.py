@@ -1,9 +1,15 @@
+import asyncio
 import time
 
 import pytest
 
 from app.models import LiquidationEvent, MarketMetrics, NormalizedOrderBook, OrderLevel
 from app.state import StateManager
+
+
+def _book(sequence: int) -> NormalizedOrderBook:
+    level = OrderLevel(price=100.0, qty=float(sequence), notional=100.0 * sequence)
+    return NormalizedOrderBook("binance", "BTCUSDT", sequence, [level], [level], sequence)
 
 
 @pytest.mark.asyncio
@@ -47,3 +53,47 @@ async def test_metrics_partial_updates_preserve_ticker_fields() -> None:
     metric = snapshot["metrics"][0]
     assert metric["mark_price"] == 150.0
     assert metric["open_interest"] == 1000.0
+
+
+@pytest.mark.asyncio
+async def test_orderbook_updates_are_coalesced_without_slowing_internal_state() -> None:
+    state = StateManager(orderbook_publish_interval_seconds=0.05)
+    subscriber = state.subscribe(maxsize=10)
+
+    await state.set_order_book(_book(1))
+    first = await asyncio.wait_for(subscriber.get(), timeout=0.1)
+    await state.set_order_book(_book(2))
+    await state.set_order_book(_book(3))
+
+    snapshot = await state.snapshot("BTCUSDT")
+    assert snapshot["order_books"][0]["sequence"] == 3
+    second = await asyncio.wait_for(subscriber.get(), timeout=0.2)
+    assert first is not None and first["data"]["sequence"] == 1
+    assert second is not None and second["data"]["sequence"] == 3
+    assert subscriber.queue.empty()
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_full_subscriber_queue_disconnects_with_explicit_sentinel() -> None:
+    state = StateManager()
+    subscriber = state.subscribe(maxsize=1)
+
+    await state.publish("metrics.update", {"symbol": "BTCUSDT", "value": 1})
+    await state.publish("metrics.update", {"symbol": "BTCUSDT", "value": 2})
+
+    assert subscriber.disconnected is True
+    assert state.subscriber_count == 0
+    assert await subscriber.get() is None
+
+
+@pytest.mark.asyncio
+async def test_metrics_publish_a_single_event_type() -> None:
+    state = StateManager()
+    subscriber = state.subscribe(maxsize=2)
+
+    await state.update_metrics(MarketMetrics("bybit", "BTCUSDT", 1, mark_price=100.0))
+
+    event = await subscriber.get()
+    assert event is not None and event["type"] == "metrics.update"
+    assert subscriber.queue.empty()

@@ -87,6 +87,13 @@ NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws/market
 Copiar `apps/web/.env.example` a `apps/web/.env.local` solo si se necesitan otros hosts.
 Estas variables son públicas y no contienen secretos.
 
+Para permitir el dominio desplegado en Vercel, configurar en Railway una lista separada por
+comas. Localhost continúa habilitado cuando se lo incluye explícitamente:
+
+```dotenv
+CORS_ALLOWED_ORIGINS=http://localhost:3000,https://market-dashboard.vercel.app
+```
+
 ## API interna implementada
 
 | Método | Ruta | Notas |
@@ -103,9 +110,13 @@ Eventos WebSocket emitidos en esta fase:
 - `market.snapshot`
 - `orderbook.update`
 - `liquidation.event`
-- `ticker.update`
 - `metrics.update`
 - `source.status`
+
+El backend procesa cada delta de los exchanges a frecuencia completa, pero coalesce el
+libro enviado a navegadores por exchange/símbolo a intervalos de aproximadamente 200 ms.
+Cada cliente tiene una cola acotada: si se llena o un envío supera el timeout, la conexión
+se cierra con código `1013` para que el frontend reconecte y reciba snapshots frescos.
 
 No se agregaron rutas para módulos pendientes.
 
@@ -152,7 +163,8 @@ docker build -t market-intelligence-api services/api
 docker run --rm -p 8000:8000 market-intelligence-api
 ```
 
-El contenedor corre como usuario no root y expone el puerto `8000`.
+El contenedor corre como usuario no root, escucha en `0.0.0.0` y usa `PORT` cuando Railway
+lo proporciona, con `8000` como fallback local.
 
 ## Deploy objetivo
 

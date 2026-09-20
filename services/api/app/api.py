@@ -1,3 +1,4 @@
+import asyncio
 import time
 from typing import Literal
 
@@ -80,19 +81,32 @@ async def market_websocket(websocket: WebSocket, symbols: str = "BTCUSDT,ETHUSDT
 
     await websocket.accept()
     state: StateManager = websocket.app.state.market_state
-    queue = state.subscribe()
+    subscriber = state.subscribe(symbols=selected)
+    send_timeout = websocket.app.state.market_settings.websocket_send_timeout_seconds
     try:
         for symbol in sorted(selected):
-            await websocket.send_json(
-                {"type": "market.snapshot", "data": await state.snapshot(symbol)}
+            await asyncio.wait_for(
+                websocket.send_json(
+                    {"type": "market.snapshot", "data": await state.snapshot(symbol)}
+                ),
+                timeout=send_timeout,
             )
         while True:
-            event = await queue.get()
-            data = event.get("data", {})
-            event_symbol = data.get("symbol") if isinstance(data, dict) else None
-            if event_symbol is None or event_symbol in selected:
-                await websocket.send_json(event)
+            event = await subscriber.get()
+            if event is None:
+                await _close_websocket(websocket, code=1013, reason="client too slow")
+                return
+            await asyncio.wait_for(websocket.send_json(event), timeout=send_timeout)
+    except TimeoutError:
+        await _close_websocket(websocket, code=1013, reason="send timeout")
     except WebSocketDisconnect:
         pass
     finally:
-        state.unsubscribe(queue)
+        state.unsubscribe(subscriber)
+
+
+async def _close_websocket(websocket: WebSocket, *, code: int, reason: str) -> None:
+    try:
+        await websocket.close(code=code, reason=reason)
+    except RuntimeError:
+        pass
