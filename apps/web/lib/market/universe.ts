@@ -22,7 +22,6 @@ interface BybitInstrumentPage {
       status?: string;
       contractType?: string;
       quoteCoin?: string;
-      marketRegion?: string;
     }>;
     nextPageCursor?: string;
   };
@@ -107,7 +106,6 @@ async function loadBybitSymbols(): Promise<Set<string>> {
         item.status === "Trading" &&
         item.contractType === "LinearPerpetual" &&
         item.quoteCoin === "USDT" &&
-        !item.marketRegion &&
         typeof item.symbol === "string"
       ) {
         symbols.add(item.symbol);

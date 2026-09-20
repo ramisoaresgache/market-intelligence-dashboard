@@ -153,21 +153,46 @@ export class BinanceAdapter extends BrowserExchangeAdapter {
   private async pollOpenInterest(): Promise<void> {
     if (!this.active) return;
     try {
-      const response = await fetch(
-        `${REST_BASE}/fapi/v1/openInterest?symbol=${encodeURIComponent(this.symbol)}`,
-        { signal: this.signal() },
-      );
-      if (!response.ok) throw new Error(`Binance open interest HTTP ${response.status}`);
-      const payload = (await response.json()) as {
+      const signal = this.signal();
+      const [openInterestResponse, premiumResponse] = await Promise.all([
+        fetch(
+          `${REST_BASE}/fapi/v1/openInterest?symbol=${encodeURIComponent(this.symbol)}`,
+          { signal },
+        ),
+        fetch(
+          `${REST_BASE}/fapi/v1/premiumIndex?symbol=${encodeURIComponent(this.symbol)}`,
+          { signal },
+        ),
+      ]);
+      if (!openInterestResponse.ok) {
+        throw new Error(`Binance open interest HTTP ${openInterestResponse.status}`);
+      }
+      if (!premiumResponse.ok) {
+        throw new Error(`Binance premium index HTTP ${premiumResponse.status}`);
+      }
+
+      const openInterestPayload = (await openInterestResponse.json()) as {
         openInterest: string;
         symbol: string;
         time?: number;
       };
+      const premiumPayload = (await premiumResponse.json()) as {
+        markPrice?: string;
+        symbol?: string;
+        time?: number;
+      };
+      const openInterest = Number(openInterestPayload.openInterest);
+      const markPrice = Number(premiumPayload.markPrice);
       const metric: MarketMetrics = {
         exchange: "binance",
-        symbol: payload.symbol,
-        ts: payload.time ?? Date.now(),
-        openInterest: Number(payload.openInterest),
+        symbol: openInterestPayload.symbol,
+        ts: premiumPayload.time ?? openInterestPayload.time ?? Date.now(),
+        openInterest: Number.isFinite(openInterest) ? openInterest : undefined,
+        markPrice: Number.isFinite(markPrice) ? markPrice : undefined,
+        openInterestValue:
+          Number.isFinite(openInterest) && Number.isFinite(markPrice)
+            ? openInterest * markPrice
+            : undefined,
       };
       this.emit({ type: "metrics", data: metric });
     } catch (error) {

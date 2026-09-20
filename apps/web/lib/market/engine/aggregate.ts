@@ -16,7 +16,7 @@ export function aggregateOrderBooks(
 ): { bids: AggregatedOrderLevel[]; asks: AggregatedOrderLevel[]; bucketSize: number } {
   const selected = filter === "all" ? books : books.filter((book) => book.exchange === filter);
   const midpoint = midpointFromBooks(selected) ?? midpointFromBooks(books) ?? 1;
-  const bucket = bucketSize && bucketSize > 0 ? bucketSize : autoBucketSize(midpoint);
+  const bucket = bucketSize && bucketSize > 0 ? bucketSize : autoOrderBookBucketSize(midpoint);
 
   return {
     bids: aggregateSide(selected, "bids", bucket, true).slice(0, depth),
@@ -32,14 +32,17 @@ export function midpointFromBooks(books: NormalizedOrderBook[]): number | null {
   return (Math.max(...bids) + Math.min(...asks)) / 2;
 }
 
+export function autoOrderBookBucketSize(price: number): number {
+  return niceBucket(price, 0.00005);
+}
+
+export function autoHeatmapBucketSize(price: number): number {
+  return niceBucket(price, 0.00035);
+}
+
+// Alias conservado para compatibilidad con tests/código previo.
 export function autoBucketSize(price: number): number {
-  if (!Number.isFinite(price) || price <= 0) return 1;
-  const target = price * 0.00035;
-  const exponent = Math.floor(Math.log10(target));
-  const base = 10 ** exponent;
-  const scaled = target / base;
-  const nice = scaled <= 1 ? 1 : scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10;
-  return nice * base;
+  return autoOrderBookBucketSize(price);
 }
 
 export function buildLiquidityFrame(
@@ -49,7 +52,12 @@ export function buildLiquidityFrame(
 ): LiquidityFrame | null {
   const midpoint = midpointFromBooks(books);
   if (midpoint === null) return null;
-  const aggregated = aggregateOrderBooks(books, "all", undefined, 45);
+  const aggregated = aggregateOrderBooks(
+    books,
+    "all",
+    autoHeatmapBucketSize(midpoint),
+    60,
+  );
   const levels = new Map<number, LiquidityLevel>();
 
   for (const bid of aggregated.bids) {
@@ -75,6 +83,16 @@ export function buildLiquidityFrame(
     bucketSize: aggregated.bucketSize,
     levels: [...levels.values()].sort((left, right) => left.price - right.price),
   };
+}
+
+function niceBucket(price: number, ratio: number): number {
+  if (!Number.isFinite(price) || price <= 0) return 1;
+  const target = Math.max(Number.EPSILON, price * ratio);
+  const exponent = Math.floor(Math.log10(target));
+  const base = 10 ** exponent;
+  const scaled = target / base;
+  const nice = scaled <= 1 ? 1 : scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10;
+  return nice * base;
 }
 
 function aggregateSide(
