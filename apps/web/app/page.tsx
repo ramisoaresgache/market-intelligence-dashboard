@@ -55,16 +55,16 @@ export default function Dashboard() {
   const history = useLiquidityHistory(selectedSymbol, books);
   const bybit = snapshot?.metrics.find((metric) => metric.exchange === "bybit");
   const binance = snapshot?.metrics.find((metric) => metric.exchange === "binance");
-  const currentPrice = bybit?.markPrice ?? bybit?.lastPrice ?? midpointFromBooks(books);
+  const currentPrice =
+    bybit?.markPrice ?? binance?.markPrice ?? bybit?.lastPrice ?? midpointFromBooks(books);
+  const aggregatedAll = useMemo(() => aggregateOrderBooks(books, "all", undefined, 24), [books]);
   const aggregated = useMemo(
     () => aggregateOrderBooks(books, exchangeFilter, undefined, 24),
     [books, exchangeFilter],
   );
-  const bestBid =
-    Math.max(...books.flatMap((book) => book.bids.slice(0, 1).map((level) => level.price)), 0) ||
-    null;
-  const askValues = books.flatMap((book) => book.asks.slice(0, 1).map((level) => level.price));
-  const bestAsk = askValues.length ? Math.min(...askValues) : null;
+  const bestBid = aggregatedAll.bids[0]?.price ?? null;
+  const bestAsk = aggregatedAll.asks[0]?.price ?? null;
+  const spread = bestBid !== null && bestAsk !== null ? Math.max(0, bestAsk - bestBid) : null;
   const liquidations = snapshot?.liquidations ?? [];
   const longLiquidations = liquidations
     .filter((item) => item.side === "long")
@@ -161,14 +161,11 @@ export default function Dashboard() {
           <small>{snapshot?.ts ? `Actualizado ${formatTime(snapshot.ts)}` : "Esperando datos…"}</small>
         </div>
         <div className="summary-strip">
-          <Metric label="Mejor compra" value={formatPrice(bestBid)} tone="positive" />
-          <Metric label="Mejor venta" value={formatPrice(bestAsk)} tone="negative" />
-          <Metric
-            label="Diferencial"
-            value={bestBid && bestAsk ? formatPrice(bestAsk - bestBid) : "—"}
-          />
-          <Metric label="Interés abierto Bybit" value={formatMoney(bybit?.openInterestValue)} />
-          <Metric label="Interés abierto Binance" value={formatNumber(binance?.openInterest)} />
+          <Metric label="Mejor compra agregada" value={formatPrice(bestBid)} tone="positive" />
+          <Metric label="Mejor venta agregada" value={formatPrice(bestAsk)} tone="negative" />
+          <Metric label="Spread agregado" value={formatPrice(spread)} />
+          <Metric label="Interés abierto Bybit (USD)" value={formatMoney(bybit?.openInterestValue)} />
+          <Metric label="Interés abierto Binance (USD)" value={formatMoney(binance?.openInterestValue)} />
           <Metric
             label="Tasa de financiación"
             value={formatFunding(bybit?.fundingRate)}
@@ -182,8 +179,12 @@ export default function Dashboard() {
           <div className="panel-head">
             <div>
               <span className="kicker">MAPA DE LIQUIDEZ</span>
-              <h3>Órdenes limit visibles a través del tiempo</h3>
-              <p>Verde = compras · Rojo = ventas · historial guardado localmente en este navegador.</p>
+              <h3>Dónde se concentra la liquidez y cuánto tiempo permanece</h3>
+              <p>
+                Cada franja horizontal representa órdenes limit visibles en una zona de precio.
+                Verde = compras, rojo = ventas y mayor intensidad = mayor nocional. A la derecha se
+                muestra el perfil de liquidez actual.
+              </p>
             </div>
             <div className="segmented">
               {HISTORY_OPTIONS.map((option) => (
@@ -225,7 +226,7 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="bucket-line">
-            Agrupación automática: <b>{formatPrice(aggregated.bucketSize)}</b>
+            Agrupación del libro: <b>{formatPrice(aggregated.bucketSize)}</b>
           </div>
           <div className="orderbook-columns">
             <OrderSide title="Ventas" levels={aggregated.asks} side="ask" />
@@ -351,11 +352,6 @@ function connectionLabel(source: SourceStatus): string {
 function formatMoney(value?: number | null): string {
   if (value == null || !Number.isFinite(value)) return "—";
   return `$${compact.format(value)}`;
-}
-
-function formatNumber(value?: number | null): string {
-  if (value == null || !Number.isFinite(value)) return "—";
-  return compact.format(value);
 }
 
 function formatPrice(value?: number | null): string {
