@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import styles from "./liquidation-heatmap.module.css";
 import type {
   EstimatedLiquidationZone,
   HistoricalCandle,
@@ -91,9 +92,7 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
   function handlePointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
     if (!payload || !canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
-    const width = rect.width;
-    const height = rect.height;
-    const geometry = computeGeometry(payload, width, height);
+    const geometry = computeGeometry(payload, rect.width, rect.height);
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
     if (
@@ -106,8 +105,12 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
       return;
     }
 
-    const ts = geometry.minTs + ((x - geometry.left) / geometry.plotWidth) * (geometry.maxTs - geometry.minTs);
-    const price = geometry.maxPrice - ((y - geometry.top) / geometry.plotHeight) * (geometry.maxPrice - geometry.minPrice);
+    const ts =
+      geometry.minTs +
+      ((x - geometry.left) / geometry.plotWidth) * (geometry.maxTs - geometry.minTs);
+    const price =
+      geometry.maxPrice -
+      ((y - geometry.top) / geometry.plotHeight) * (geometry.maxPrice - geometry.minPrice);
     const tolerance = (geometry.maxPrice - geometry.minPrice) / 45;
     const active = payload.zones.filter(
       (zone) =>
@@ -137,29 +140,29 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
   }
 
   return (
-    <div className="liquidation-map-shell">
-      <div className="liquidation-map-meta">
-        <span className="estimate-badge">ESTIMADO</span>
+    <div className={styles.shell}>
+      <div className={styles.meta}>
+        <span className={styles.badge}>ESTIMADO</span>
         <span>{hours} h históricas</span>
         <span>{sourceLabel}</span>
         {payload?.warnings.length ? <span title={payload.warnings.join(" · ")}>fuente parcial</span> : null}
       </div>
 
-      <div className="liquidation-map-stage">
+      <div className={styles.stage}>
         <canvas
           ref={canvasRef}
-          className="heatmap-canvas liquidation-map-canvas"
+          className={styles.canvas}
           aria-label="Mapa de liquidaciones estimadas"
           onPointerMove={handlePointerMove}
           onPointerLeave={() => setHover(null)}
         />
 
-        {loading && <div className="map-overlay-message">Calculando zonas de liquidación estimadas…</div>}
-        {error && <div className="map-overlay-message error">{error}</div>}
+        {loading && <div className={styles.overlay}>Calculando zonas de liquidación estimadas…</div>}
+        {error && <div className={`${styles.overlay} ${styles.error}`}>{error}</div>}
 
         {hover && !loading && !error && (
           <div
-            className="map-tooltip"
+            className={styles.tooltip}
             style={{
               left: `${Math.min(hover.x + 14, (canvasRef.current?.clientWidth ?? 500) - 205)}px`,
               top: `${Math.max(8, hover.y - 92)}px`,
@@ -185,12 +188,12 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
         )}
       </div>
 
-      <div className="liquidation-map-legend">
+      <div className={styles.legend}>
         <span>Menor concentración</span>
         <i />
         <span>Mayor concentración estimada</span>
       </div>
-      <p className="map-disclaimer">
+      <p className={styles.disclaimer}>
         Las bandas son una estimación propia basada en velas, volumen e interés abierto público. No
         representan posiciones individuales ni niveles exactos publicados por los exchanges.
       </p>
@@ -370,18 +373,28 @@ function drawAxes(ctx: CanvasRenderingContext2D, geometry: Geometry): void {
   ctx.textAlign = "left";
   ctx.fillText(formatAxisTime(geometry.minTs), geometry.left, geometry.bottom + 18);
   ctx.textAlign = "center";
-  ctx.fillText(formatAxisTime((geometry.minTs + geometry.maxTs) / 2), geometry.left + geometry.plotWidth / 2, geometry.bottom + 18);
+  ctx.fillText(
+    formatAxisTime((geometry.minTs + geometry.maxTs) / 2),
+    geometry.left + geometry.plotWidth / 2,
+    geometry.bottom + 18,
+  );
   ctx.textAlign = "right";
   ctx.fillText(formatAxisTime(geometry.maxTs), geometry.right, geometry.bottom + 18);
 }
 
 function timeToX(ts: number, geometry: Geometry): number {
-  const ratio = clamp((ts - geometry.minTs) / Math.max(1, geometry.maxTs - geometry.minTs), 0, 1);
+  const ratio = clamp(
+    (ts - geometry.minTs) / Math.max(1, geometry.maxTs - geometry.minTs),
+    0,
+    1,
+  );
   return geometry.left + ratio * geometry.plotWidth;
 }
 
 function priceToY(price: number, geometry: Geometry): number {
-  const ratio = (geometry.maxPrice - price) / Math.max(Number.EPSILON, geometry.maxPrice - geometry.minPrice);
+  const ratio =
+    (geometry.maxPrice - price) /
+    Math.max(Number.EPSILON, geometry.maxPrice - geometry.minPrice);
   return geometry.top + ratio * geometry.plotHeight;
 }
 
@@ -399,7 +412,12 @@ function intensityColor(intensity: number): string {
   for (let index = 0; index < stops.length - 1; index += 1) {
     const candidateLeft = stops[index];
     const candidateRight = stops[index + 1];
-    if (candidateLeft && candidateRight && clamped >= candidateLeft.p && clamped <= candidateRight.p) {
+    if (
+      candidateLeft &&
+      candidateRight &&
+      clamped >= candidateLeft.p &&
+      clamped <= candidateRight.p
+    ) {
       left = candidateLeft;
       right = candidateRight;
       break;
