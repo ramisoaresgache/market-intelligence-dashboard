@@ -1,5 +1,5 @@
 import { BybitOrderBook, SequenceGapError, type BybitDepthData } from "../engine/orderbook";
-import { MARKET_SYMBOLS } from "../symbols";
+import { normalizeSymbol } from "../symbols";
 import type { LiquidationEvent, MarketMetrics } from "../types";
 import {
   BrowserExchangeAdapter,
@@ -23,15 +23,17 @@ export class BybitAdapter extends BrowserExchangeAdapter {
   private socket: WebSocket | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private readonly books = new Map<string, BybitOrderBook>();
+  private readonly symbol: string;
 
-  constructor(emit: MarketEventSink) {
+  constructor(emit: MarketEventSink, symbol: string) {
     super("bybit", emit);
+    this.symbol = normalizeSymbol(symbol);
   }
 
   start(): void {
     if (this.active) return;
     this.active = true;
-    this.status({ connected: false, state: "connecting", detail: "Opening public stream" });
+    this.status({ connected: false, state: "connecting", detail: "Abriendo flujo público" });
     this.connect(0);
   }
 
@@ -39,7 +41,7 @@ export class BybitAdapter extends BrowserExchangeAdapter {
     super.stop();
     if (this.heartbeatTimer !== null) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = null;
-    this.socket?.close(1000, "worker stopped");
+    this.socket?.close(1000, "mercado cambiado");
     this.socket = null;
     this.books.clear();
   }
@@ -50,17 +52,17 @@ export class BybitAdapter extends BrowserExchangeAdapter {
     this.socket = socket;
 
     socket.onopen = () => {
-      const topics = MARKET_SYMBOLS.flatMap((symbol) => [
-        `orderbook.50.${symbol}`,
-        `allLiquidation.${symbol}`,
-        `tickers.${symbol}`,
-      ]);
+      const topics = [
+        `orderbook.50.${this.symbol}`,
+        `allLiquidation.${this.symbol}`,
+        `tickers.${this.symbol}`,
+      ];
       socket.send(JSON.stringify({ op: "subscribe", args: topics }));
       this.status({
         connected: true,
         state: "live",
         lastMessageAt: Date.now(),
-        detail: "Public linear stream live",
+        detail: "Flujo lineal público activo",
       });
       this.heartbeatTimer = setInterval(() => {
         if (socket.readyState === WebSocket.OPEN) {
@@ -76,16 +78,16 @@ export class BybitAdapter extends BrowserExchangeAdapter {
           connected: true,
           state: "live",
           lastMessageAt: Date.now(),
-          detail: "Public linear stream live",
+          detail: "Flujo lineal público activo",
         });
       } catch (error) {
         this.status({
           connected: false,
           state: "reconnecting",
           lastMessageAt: Date.now(),
-          detail: error instanceof Error ? error.message : "Invalid stream message",
+          detail: error instanceof Error ? error.message : "Mensaje inválido",
         });
-        if (error instanceof SequenceGapError) socket.close(1011, "depth sequence gap");
+        if (error instanceof SequenceGapError) socket.close(1011, "salto en secuencia del libro");
       }
     };
 
@@ -95,7 +97,7 @@ export class BybitAdapter extends BrowserExchangeAdapter {
       this.heartbeatTimer = null;
       if (this.socket === socket) this.socket = null;
       this.books.clear();
-      this.status({ connected: false, state: "reconnecting", detail: "Retrying public stream" });
+      this.status({ connected: false, state: "reconnecting", detail: "Reintentando conexión" });
       this.scheduleReconnect((next) => this.connect(next), attempt);
     };
   }
@@ -104,7 +106,7 @@ export class BybitAdapter extends BrowserExchangeAdapter {
     const topic = payload.topic ?? "";
     if (topic.startsWith("orderbook.")) {
       const data = payload.data as BybitDepthData;
-      if (!data || typeof data.s !== "string") return;
+      if (!data || data.s !== this.symbol) return;
       const book = this.books.get(data.s) ?? new BybitOrderBook();
       this.books.set(data.s, book);
       if (book.apply(payload.type ?? "", data)) {
@@ -114,12 +116,12 @@ export class BybitAdapter extends BrowserExchangeAdapter {
         });
       }
     } else if (topic.startsWith("allLiquidation.")) {
-      for (const liquidation of parseBybitLiquidations(payload)) {
+      for (const liquidation of parseBybitLiquidations(payload, this.symbol)) {
         this.emit({ type: "liquidation", data: liquidation });
       }
     } else if (topic.startsWith("tickers.")) {
       const metrics = parseBybitTicker(payload);
-      if (metrics) this.emit({ type: "metrics", data: metrics });
+      if (metrics && metrics.symbol === this.symbol) this.emit({ type: "metrics", data: metrics });
     }
   }
 }
@@ -127,22 +129,24 @@ export class BybitAdapter extends BrowserExchangeAdapter {
 export function parseBybitPayload(raw: unknown): BybitPayload {
   const decoded = typeof raw === "string" ? JSON.parse(raw) : raw;
   if (typeof decoded !== "object" || decoded === null || Array.isArray(decoded)) {
-    throw new Error("Expected a Bybit JSON object");
+    throw new Error("Se esperaba un objeto JSON de Bybit");
   }
   return decoded as BybitPayload;
 }
 
-export function parseBybitLiquidations(payload: BybitPayload): LiquidationEvent[] {
+export function parseBybitLiquidations(payload: BybitPayload, symbolFilter?: string): LiquidationEvent[] {
   const data = Array.isArray(payload.data) ? payload.data : [payload.data];
+  const normalizedFilter = symbolFilter ? normalizeSymbol(symbolFilter) : null;
   return data.flatMap((value) => {
     if (!isRecord(value) || typeof value.s !== "string") return [];
-    if (!MARKET_SYMBOLS.includes(value.s as (typeof MARKET_SYMBOLS)[number])) return [];
+    const symbol = value.s.toUpperCase();
+    if (!symbol.endsWith("USDT") || (normalizedFilter && symbol !== normalizedFilter)) return [];
     const price = Number(value.p);
     const qty = Number(value.v);
     if (!Number.isFinite(price) || !Number.isFinite(qty)) return [];
     return [{
       exchange: "bybit" as const,
-      symbol: value.s,
+      symbol,
       ts: Number(value.T ?? payload.ts ?? Date.now()),
       side: value.S === "Buy" ? ("long" as const) : ("short" as const),
       price,

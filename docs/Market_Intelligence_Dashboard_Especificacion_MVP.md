@@ -1,815 +1,250 @@
-# Market Intelligence Dashboard — Especificación MVP v2
+# Market Intelligence Dashboard — Especificación MVP v3
 
-**Versión:** 2.0  
+**Versión:** 3.0  
 **Fecha:** 20/09/2026  
-**Estado:** fuente de verdad del proyecto  
-**Objetivo:** plataforma pública de inteligencia de mercados, gratuita de operar en su MVP, que centralice datos crypto en tiempo real, liquidaciones, liquidez, derivados, noticias y eventos macro sin depender de CoinGlass, Investing ni de un backend persistente 24/7.
+**Estado:** fuente de verdad del proyecto
 
-## 1. Visión del producto
+## Objetivo
 
-La aplicación será pública y podrá ser utilizada por cualquier visitante sin login.
+Plataforma pública, en español y de solo lectura para centralizar información de mercado crypto que normalmente está repartida entre exchanges, CoinGlass, Investing y fuentes macro/noticias.
 
-No es una aplicación de portfolio personal. No se guardan balances, operaciones privadas, cuentas de exchanges, API keys de usuarios ni información personal de amigos/usuarios.
+La aplicación no maneja portfolios personales, cuentas de exchanges, API keys privadas ni trading real.
 
-El objetivo es concentrar en una sola interfaz información que normalmente obliga a visitar varias fuentes:
+El MVP debe poder operar con coste de infraestructura inicial **USD 0**.
 
-- order books de exchanges;
-- liquidaciones observadas;
-- liquidity heatmap;
-- estimated liquidation heatmap propio;
-- open interest y funding;
-- noticias relevantes para mercados;
-- comunicados FED/SEC y eventos macro;
-- overview de mercado.
-
-Todo el MVP debe poder funcionar con coste de infraestructura **USD 0**, usando Vercel Hobby y fuentes públicas/gratuitas.
-
----
-
-## 2. Decisiones cerradas
-
-- Frontend: **Next.js + TypeScript**.
-- Deploy: **Vercel**.
-- Backend persistente: **NO** en el MVP v2.
-- FastAPI actual: se conserva temporalmente como referencia durante la migración y luego puede eliminarse si deja de aportar valor.
-- Base de datos: **NO**.
-- Redis: **NO**.
-- PostgreSQL: **NO**.
-- CoinGlass: **NO consumir, scrapear ni requerir**.
-- Trading real: **fuera del MVP**.
-- Usuarios/login: **fuera del MVP**.
-- Persistencia local opcional: **IndexedDB** en el navegador.
-- Fuentes privadas o con credenciales personales: **fuera del MVP**.
-- La web debe ser usable por visitantes anónimos.
-
-Diferenciar siempre estos conceptos en UI y código:
-
-1. **Liquidity Heatmap**: liquidez visible del order book.
-2. **Observed Liquidations**: liquidaciones reportadas por exchanges.
-3. **Estimated Liquidation Heatmap**: estimación propia de zonas potenciales de liquidación. Nunca dato exacto.
-
----
-
-## 3. Arquitectura frontend-first
+## Arquitectura vigente
 
 ```text
-                         VERCEL
-
-              ┌─────────────────────────┐
-              │       Next.js Web       │
-              │                         │
-              │ UI + Browser Engine     │
-              │ Web Workers             │
-              │ IndexedDB opcional      │
-              └────────────┬────────────┘
-                           │
-          ┌────────────────┼──────────────────┐
-          │                │                  │
-          ▼                ▼                  ▼
-  Exchange WebSockets   Route Handlers     Browser storage
-  públicos directos     Serverless         IndexedDB
-          │                │
-  ┌───────┼───────┐       ├── FED RSS / pages
-  │       │       │       ├── SEC RSS / releases
-Binance  Bybit  futuros    ├── GDELT
-                  adapters ├── BLS / BEA públicos
-                            └── otras fuentes sin secreto
+GitHub -> Vercel -> Next.js
+                     |
+                     +-- Browser Market Engine
+                     |     +-- Binance USD-M WS/REST
+                     |     +-- Bybit Linear WS/REST
+                     |
+                     +-- Web Worker
+                     |     +-- order books
+                     |     +-- liquidaciones
+                     |     +-- métricas
+                     |     +-- coalescing UI
+                     |
+                     +-- IndexedDB
+                           +-- historial local de liquidez
 ```
 
-### Principio principal
+No usar backend persistente para retransmitir datos públicos de exchanges.
 
-Los streams públicos de mercado deben conectarse **directamente desde el navegador al exchange** cuando técnicamente sea posible.
+FastAPI en `services/api` queda temporalmente como referencia histórica, pero la web no depende de él.
 
-No debe existir un servidor nuestro retransmitiendo continuamente order books o liquidaciones.
+## Decisiones cerradas
 
-Cada navegador:
+- Frontend: Next.js + TypeScript.
+- Deploy: Vercel.
+- Idioma visible principal: español.
+- Base de datos central: no.
+- Redis: no.
+- Backend 24/7: no.
+- CoinGlass: no consumir ni scrapear.
+- Trading real: fuera del MVP.
+- Login/usuarios: fuera del MVP.
+- Persistencia corta: IndexedDB local.
+- Datos de mercado: conexiones públicas directas desde navegador siempre que sea viable.
 
-1. abre sus conexiones WS;
-2. normaliza mensajes;
-3. mantiene estado actual;
-4. calcula agregados;
-5. genera heatmaps;
-6. persiste historial corto localmente si el usuario lo permite.
+## Mercados soportados
 
-### Route Handlers de Vercel
+No limitar la plataforma a BTC/ETH/SOL.
 
-Se permiten funciones serverless de Next.js para datos que:
+Al iniciar, consultar:
 
-- no admitan CORS desde navegador;
-- necesiten normalización RSS/XML;
-- convenga cachear en edge;
-- requieran ocultar una API key futura;
-- sean requests puntuales y no conexiones 24/7.
+- Binance USD-M `exchangeInfo`;
+- Bybit V5 `instruments-info?category=linear`.
 
-No utilizar Route Handlers como proxy continuo de WebSockets de exchanges.
+Construir el universo de **perpetuos USDT activos en ambos exchanges**, excluyendo instrumentos TradFi de Bybit cuando corresponda.
 
----
+Priorizar visualmente:
 
-## 4. Alcance del MVP v2
+- BTC
+- ETH
+- SOL
+- BNB
+- XRP
+- DOGE
 
-### Activos iniciales
+pero permitir seleccionar el resto del universo compatible.
 
-- BTCUSDT
-- ETHUSDT
-- SOLUSDT
+### Regla de escalabilidad
 
-### Exchanges prioritarios
+No abrir order books de cientos de monedas simultáneamente.
 
-#### Fase A
+El navegador mantiene streams de alta frecuencia únicamente para **el mercado seleccionado**. Al cambiar de símbolo:
 
-- Binance USD-M
-- Bybit Linear
+1. cerrar streams anteriores;
+2. limpiar estado live del símbolo anterior;
+3. abrir Binance/Bybit para el nuevo símbolo;
+4. restaurar historial local del nuevo símbolo desde IndexedDB;
+5. continuar capturando muestras.
 
-#### Fase B
-
-- BingX Perpetual
-- Bitunix Futures
-
-BingX/Bitunix se agregan únicamente después de verificar que sus WebSockets públicos funcionan correctamente desde navegador. Si una fuente bloquea `Origin` o presenta incompatibilidades browser-side, el módulo debe degradar de manera visible y documentar la limitación. No crear infraestructura paga para resolverlo.
-
----
-
-## 5. Datos de mercado directos desde navegador
+## Fuentes actuales
 
 ### Binance USD-M
 
-Fuentes conocidas del proyecto:
-
 - Depth WS: `wss://fstream.binance.com/public/ws/{symbol}@depth@100ms`
-- Liquidations: `wss://fstream.binance.com/market/ws/!forceOrder@arr`
-- Open Interest REST: `https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT`
+- Snapshot depth REST: `/fapi/v1/depth`
+- Liquidaciones: `wss://fstream.binance.com/market/ws/!forceOrder@arr`
+- Open Interest REST: `/fapi/v1/openInterest`
+- Exchange info: `/fapi/v1/exchangeInfo`
 
-Reglas:
+Las liquidaciones Binance deben marcarse como cobertura parcial / `snapshot`.
 
-- Binance `forceOrder` se considera **Observed / partial snapshot**.
-- No presentar ese stream como totalidad de las liquidaciones del exchange.
-- Mantener validación de secuencia del depth incremental.
+### Bybit Linear
 
-### Bybit V5
+- WS: `wss://stream.bybit.com/v5/public/linear`
+- Order book: `orderbook.50.{symbol}`
+- Liquidaciones: `allLiquidation.{symbol}`
+- Ticker: `tickers.{symbol}`
+- Instrumentos: `/v5/market/instruments-info?category=linear`
 
-- WS público: `wss://stream.bybit.com/v5/public/linear`
-- Orderbook: `orderbook.50.BTCUSDT`
-- Liquidations: `allLiquidation.BTCUSDT`
-- Ticker: `tickers.BTCUSDT`
-- OI REST: `/v5/market/open-interest`
+Las liquidaciones Bybit se marcan como `all` según documentación de la fuente.
 
-Reglas:
+## Browser Market Engine
 
-- Bybit `allLiquidation` se etiqueta como **Observed / all according to source documentation**.
-- Heartbeat explícito.
-- Validar snapshots/deltas/sequence.
+- Un solo `MarketConnectionManager` por pestaña.
+- Un Web Worker procesa mensajes de alta frecuencia.
+- React recibe snapshots coalescidos aproximadamente cada 150 ms.
+- Una caída de Binance no debe detener Bybit y viceversa.
+- Validar secuencias de depth incremental.
+- La UI nunca consume payloads raw de exchange.
 
-### BingX Perpetual
+## Order Book agregado
 
-Referencia existente:
+Para el símbolo activo:
 
-- WS: `wss://open-api-swap.bingx.com/swap-market`
-- Depth: `BTC-USDT@depth20@200ms`
-- Incremental depth: `BTC-USDT@incrDepth`
-- OI: `/openApi/swap/v2/quote/openInterest`
-- Funding/mark: `/openApi/swap/v2/quote/premiumIndex`
-
-Sus mensajes pueden requerir GZIP. Implementar sólo luego de prueba browser real.
-
-### Bitunix Futures
-
-Referencia existente:
-
-- WS: `wss://fapi.bitunix.com/public/`
-- depth: `depth_books`
-- trades: `trade`
-- price/funding: `price`
-- REST depth: `/api/v1/futures/market/depth`
-
-Implementar sólo luego de prueba browser real.
-
----
-
-## 6. Browser Market Engine
-
-Crear una capa independiente de React que procese datos de mercado.
-
-Estructura objetivo sugerida:
-
-```text
-apps/web/
-  lib/
-    market/
-      adapters/
-        base.ts
-        binance.ts
-        bybit.ts
-        bingx.ts
-        bitunix.ts
-      engine/
-        orderbook.ts
-        liquidations.ts
-        liquidity-heatmap.ts
-        estimated-liquidations.ts
-        metrics.ts
-      storage/
-        indexeddb.ts
-      types.ts
-      symbols.ts
-  workers/
-    market.worker.ts
-```
-
-Preferir un **Web Worker** para procesamiento de alta frecuencia y evitar renders continuos del main thread.
-
-El worker recibe mensajes raw/normalizados y publica hacia React snapshots/coalesced updates a una frecuencia razonable, objetivo inicial 4-10 actualizaciones UI por segundo.
-
-Los WebSockets pueden vivir en el worker si la compatibilidad del navegador lo permite. Si no, las conexiones pueden vivir en un manager del main thread y enviar datos al worker.
-
----
-
-## 7. Tipos normalizados TypeScript
-
-```ts
-export type Exchange = "binance" | "bybit" | "bingx" | "bitunix";
-
-export interface OrderLevel {
-  price: number;
-  qty: number;
-  notional: number;
-}
-
-export interface NormalizedOrderBook {
-  exchange: Exchange;
-  symbol: string;
-  ts: number;
-  bids: OrderLevel[];
-  asks: OrderLevel[];
-  sequence?: string | number | null;
-}
-
-export interface LiquidationEvent {
-  exchange: Exchange;
-  symbol: string;
-  ts: number;
-  side: "long" | "short";
-  price: number;
-  qty: number;
-  notional: number;
-  sourceQuality: "all" | "snapshot" | "unknown";
-}
-
-export interface MarketMetrics {
-  exchange: Exchange;
-  symbol: string;
-  ts: number;
-  markPrice?: number;
-  lastPrice?: number;
-  openInterest?: number;
-  openInterestValue?: number;
-  fundingRate?: number;
-  nextFundingTime?: number;
-}
-```
-
-React/UI nunca debe depender del payload raw específico de un exchange.
-
----
-
-## 8. Order Book agregado
-
-Objetivo: visualizar liquidez conjunta de múltiples exchanges.
-
-Proceso:
-
-1. normalizar símbolos;
+1. normalizar niveles Binance + Bybit;
 2. calcular `notional = price * qty`;
-3. agrupar niveles por buckets de precio configurables;
-4. sumar bids y asks;
+3. agrupar niveles en price buckets automáticos;
+4. sumar nocional por bucket;
 5. conservar desglose por exchange;
-6. permitir filtros por exchange;
-7. indicar siempre que son mercados perpetual cuando corresponda.
+6. permitir filtros `Todos`, `Binance`, `Bybit`;
+7. mostrar compras y ventas separadas.
 
-Opciones de UI:
+El bucket automático debe adaptarse al precio para funcionar tanto con BTC como con altcoins de bajo precio.
 
-- All Exchanges
-- Binance
-- Bybit
-- BingX
-- Bitunix
+## Liquidity Heatmap
 
-No sumar silenciosamente instrumentos con unidades o tipos incompatibles.
+Representa **órdenes limit visibles**, no liquidaciones.
 
----
+Construcción:
 
-## 9. Liquidity Heatmap
+- snapshot agregado cada ~5 segundos;
+- X = tiempo;
+- Y = precio;
+- intensidad = nocional visible usando escala logarítmica;
+- diferenciar bids y asks;
+- mostrar línea de precio actual;
+- ventanas iniciales: 30 min, 1 h, 2 h, 4 h.
 
-Este mapa representa **órdenes limit visibles**, no liquidaciones.
+### IndexedDB
 
-### Construcción browser-side
+Guardar frames de liquidez por `symbol + timestamp`.
 
-- capturar snapshots agregados cada 2-5 segundos;
-- mantener historial en memoria;
-- guardar opcionalmente en IndexedDB;
-- retención local objetivo inicial: 6 horas;
-- matriz:
-  - X = tiempo;
-  - Y = precio;
-  - valor = notional visible;
-- normalizar intensidad con `log1p()` o percentiles;
-- poder distinguir bids/asks;
-- opcional: persistencia de pared para diferenciar órdenes fugaces de liquidez estable.
+Retención inicial: 4 horas.
 
-### Persistencia
+Cada navegador tiene su propio histórico. No existe histórico global compartido.
 
-Si el navegador se abre por primera vez, el heatmap empieza sin histórico previo.
+Limpiar registros vencidos automáticamente.
 
-UI debe informar por ejemplo:
-
-`Local history since 18:42`
-
-IndexedDB puede conservar historial entre sesiones del mismo navegador.
-
-No existe histórico global compartido en MVP.
-
----
-
-## 10. Observed Liquidations
-
-Mostrar feed live:
-
-```text
-17:31:42  BTC  LONG   $382K   Bybit
-17:31:40  ETH  SHORT  $118K   Binance
-```
-
-Agregar localmente por:
-
-- 15 minutos;
-- 1 hora;
-- 4 horas;
-- sesión actual.
+## Observed Liquidations
 
 Mostrar:
 
-- total long liquidado;
-- total short liquidado;
-- exchange;
-- símbolo;
-- cantidad de eventos;
-- calidad de fuente.
+- hora;
+- exchange/fuente;
+- largo/corto liquidado;
+- precio;
+- nocional;
+- totales de sesión.
 
-No mezclar cobertura parcial de Binance con cobertura completa declarada de Bybit sin indicarlo.
+Diferenciar explícitamente cobertura Binance vs Bybit.
 
----
+## UI
 
-## 11. Estimated Liquidation Heatmap v1
+Todo texto funcional debe estar en español, salvo nombres propios/técnicos como Binance, Bybit, Bitcoin, funding cuando se use como término de mercado acompañado por explicación.
 
-Este es un modelo analítico propio y debe etiquetarse explícitamente:
+Pantalla actual:
 
-**Estimated Liquidation Heatmap**
+1. estado de fuentes;
+2. selector dinámico de mercado;
+3. accesos rápidos;
+4. precio y métricas;
+5. Liquidity Heatmap;
+6. Order Book agregado;
+7. liquidaciones observadas;
+8. feed de últimos eventos.
 
-Nunca decir que representa liquidaciones exactas abiertas en los exchanges.
+Responsive para desktop y móvil.
 
-### Inputs
+## Próxima fase: Estimated Liquidation Heatmap
+
+Debe estar visual y conceptualmente separado del Liquidity Heatmap.
+
+Será un modelo propio basado inicialmente en:
 
 - mark price;
-- open interest;
-- delta OI observado durante la sesión/local history;
+- open interest y delta OI;
 - funding;
-- trades/taker imbalance cuando esté disponible;
+- volatilidad;
 - liquidaciones observadas;
-- volatilidad reciente;
-- opcional long/short ratio si existe fuente gratuita confiable.
+- trades/taker imbalance cuando se agreguen;
+- canasta estimada de apalancamiento.
 
-### Modelo inicial
+Nunca presentarlo como niveles exactos de liquidación.
 
-1. observar cambios positivos de OI;
-2. asociarlos a la zona de precio de ese intervalo;
-3. estimar sesgo long/short con inputs disponibles;
-4. distribuir exposure por una canasta configurable de leverage:
-   - 3x
-   - 5x
-   - 10x
-   - 20x
-   - 50x
-   - 100x
-5. estimar niveles potenciales:
-   - `longLiq ≈ entry * (1 - 1/L + adjustment)`
-   - `shortLiq ≈ entry * (1 + 1/L - adjustment)`
-6. acumular densidad por price bucket;
-7. aplicar decay temporal;
-8. validar visualmente contra liquidaciones observadas durante la sesión.
+## Fases posteriores
 
-No inventar precisión falsa. Mostrar un indicador de que el mapa es estimado/modelado.
+### Exchanges
 
----
+Evaluar browser-side:
 
-## 12. IndexedDB
+- BingX;
+- Bitunix.
 
-IndexedDB es la persistencia local del MVP.
+Sólo agregarlos si sus APIs/WS públicos funcionan correctamente desde navegador sin infraestructura paga.
 
-Guardar únicamente información pública derivada de mercado:
+### Noticias y macro
 
-- liquidity snapshots;
-- liquidation events recientes;
-- OI samples;
-- funding samples;
-- preferencias UI no sensibles.
+Usar Route Handlers serverless de Next/Vercel para fuentes puntuales que necesiten RSS/XML/cache/CORS.
 
-Retención recomendada:
+Fuentes prioritarias:
 
-- liquidity snapshots: 6 h;
-- liquidations: 24 h;
-- OI/funding: 24 h;
-- preferencias: sin expiración necesaria.
+- Federal Reserve / FOMC;
+- SEC;
+- BLS;
+- BEA;
+- GDELT como agregador complementario.
 
-Agregar límites de registros/tamaño y limpieza automática.
+Objetivo: noticias de alto impacto, calendario económico y contexto que pueda mover BTC/mercados.
 
-No almacenar credenciales, wallets, operaciones privadas ni datos personales.
+No hacer polling agresivo.
 
----
+## Conceptos que nunca deben confundirse
 
-## 13. Noticias y macro vía Vercel Functions
+1. **Liquidity Heatmap** = órdenes limit visibles reales.
+2. **Observed Liquidations** = eventos de liquidación reportados por exchanges.
+3. **Estimated Liquidation Heatmap** = modelo estimado propio de zonas potenciales.
 
-Las noticias no requieren un worker 24/7.
+## Validación obligatoria por PR
 
-Crear Route Handlers serverless, por ejemplo:
-
-```text
-GET /api/news
-GET /api/news/fed
-GET /api/news/sec
-GET /api/macro
+```bash
+npm test
+npm run lint
+npm run typecheck
+npm run build:web
 ```
 
-Estas rutas consultan fuentes públicas cuando son invocadas y usan cache HTTP/edge.
-
-### Fuentes prioritarias
-
-#### Federal Reserve
-
-- FOMC calendar: `https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm`
-- feeds oficiales: `https://www.federalreserve.gov/feeds/feeds.htm`
-
-Incluir principalmente:
-
-- FOMC statements;
-- discursos relevantes;
-- testimonios;
-- press releases;
-- decisiones de tasas.
-
-#### SEC
-
-- press releases / newsroom oficial;
-- priorizar crypto, ETFs, exchanges, enforcement y regulation cuando impacte mercado.
-
-#### BLS / BEA
-
-Utilizar fuentes públicas oficiales para:
-
-- CPI;
-- empleo/NFP;
-- desempleo;
-- PPI;
-- GDP;
-- PCE cuando corresponda por fuente.
-
-No scrapear Investing.com para el MVP.
-
-#### GDELT
-
-Usar como agregador complementario para noticias globales:
-
-- Bitcoin;
-- Ethereum;
-- Federal Reserve;
-- Powell;
-- inflation;
-- SEC crypto;
-- Bitcoin ETF;
-- Nasdaq;
-- oil;
-- tariffs;
-- sanctions;
-- exchange hacks;
-- geopolitical shocks.
-
-GDELT no debe presentarse como feed tick-by-tick. Su frecuencia puede ser inferior a una fuente financiera premium.
-
-### Frecuencia frontend
-
-- refresh news: 60-180 s;
-- refresh macro: 5-15 min salvo eventos cercanos;
-- FED/SEC: 60-120 s durante uso activo.
-
-No implementar polling agresivo que consuma límites serverless sin beneficio.
-
-### Cache
-
-Los Route Handlers deben enviar headers adecuados, por ejemplo usando `s-maxage`/`stale-while-revalidate` o mecanismos equivalentes de Next/Vercel.
-
----
-
-## 14. Clasificación de noticias v1
-
-No requerir IA paga.
-
-Implementar reglas transparentes para categorizar:
-
-### HIGH
-
-- FOMC rate decision / statement;
-- Powell / Fed policy speech relevante;
-- CPI / PCE / NFP / unemployment surprise;
-- ETF approval/rejection importante;
-- SEC action material sobre grandes participantes crypto;
-- exchange hack grande;
-- sanciones/guerra/eventos geopolíticos con impacto claro en mercados;
-- decisiones regulatorias mayores.
-
-### MEDIUM
-
-- ETF flows;
-- regulación propuesta;
-- earnings macro-relevantes;
-- grandes adquisiciones;
-- cambios materiales en exchanges.
-
-### LOW
-
-- contenido general de mercado;
-- opinión sin evento factual;
-- noticias repetidas.
-
-La UI debe mostrar fuente, timestamp y enlace original.
-
----
-
-## 15. Páginas/módulos frontend
-
-### Dashboard
-
-Resumen de:
-
-- BTC / ETH / SOL;
-- mark price;
-- funding;
-- OI;
-- liquidaciones recientes;
-- principales zonas de liquidez;
-- high impact news;
-- próximos eventos macro.
-
-### Liquidations
-
-- feed live;
-- long vs short;
-- por exchange;
-- por símbolo;
-- ventanas temporales locales.
-
-### Liquidity Heatmap
-
-- mapa order book histórico local;
-- filtros por exchange;
-- selección símbolo;
-- escala de intensidad;
-- tiempo de historial disponible.
-
-### Estimated Liquidation Heatmap
-
-- modelo propio;
-- controles básicos;
-- explicación breve de metodología;
-- etiqueta Estimated siempre visible.
-
-### Order Book
-
-- agregado;
-- individual por exchange;
-- best bid/ask;
-- spread;
-- grandes walls;
-- buckets configurables.
-
-### News & Macro
-
-- HIGH/MEDIUM/LOW;
-- fuentes;
-- timestamps;
-- filtros crypto/macro/FED/SEC/geopolitics;
-- próximos eventos económicos.
-
----
-
-## 16. UX
-
-- dark mode por defecto;
-- desktop-first pero responsive;
-- información densa y legible;
-- evitar animaciones costosas con cada tick;
-- status de conexión por exchange;
-- reconexión automática;
-- indicar fuente y freshness de cada módulo;
-- mostrar degradación parcial sin romper toda la página;
-- evitar lenguaje que sugiera datos exactos cuando son estimaciones.
-
----
-
-## 17. Rendimiento
-
-El navegador no debe renderizar cada delta de exchange.
-
-Objetivo:
-
-- consumir streams a frecuencia nativa;
-- procesar en worker;
-- publicar snapshots UI coalescidos cada ~100-250 ms;
-- heatmap snapshots cada 2-5 s;
-- limitar depth almacenado al necesario;
-- limpiar buffers antiguos;
-- evitar duplicar conexiones por componente React.
-
-Debe existir **un único MarketConnectionManager** por pestaña.
-
----
-
-## 18. Seguridad
-
-- no incluir API keys privadas en código cliente;
-- no incluir secretos en Git;
-- Route Handlers pueden usar variables de entorno de Vercel si una fuente futura requiere key;
-- sólo consumir datos públicos en browser;
-- sanitizar contenido externo renderizado;
-- no ejecutar HTML de feeds/noticias;
-- no usar credenciales de exchange en el MVP.
-
----
-
-## 19. Compatibilidad y degradación
-
-Cada adapter debe reportar:
-
-```ts
-interface SourceStatus {
-  exchange: string;
-  connected: boolean;
-  lastMessageAt?: number;
-  detail?: string;
-}
-```
-
-Si Binance funciona y Bybit falla, Binance debe seguir funcionando.
-
-Si un exchange no permite conexión directa browser-side:
-
-1. marcarlo unavailable;
-2. mostrar causa resumida;
-3. no bloquear el resto de la aplicación;
-4. no crear un backend pago para ocultar el problema.
-
----
-
-## 20. Tests mínimos
-
-### Unitarios
-
-- symbol mapping;
-- parser Binance;
-- parser Bybit;
-- depth snapshot/deltas;
-- sequence gap handling;
-- liquidation side mapping;
-- aggregated order book;
-- price buckets;
-- heatmap aggregation;
-- retention IndexedDB/helpers;
-- news impact classifier.
-
-### Browser/integration
-
-- conexión real a Binance desde navegador;
-- conexión real a Bybit desde navegador;
-- reconexión;
-- worker lifecycle;
-- UI no renderiza a frecuencia raw;
-- IndexedDB restore/cleanup;
-- Route Handlers de news con mocks.
-
-No hacer tests que dependan permanentemente de disponibilidad externa para pasar CI.
-
----
-
-## 21. Deploy
-
-```text
-GitHub
-   |
-   v
-Vercel
-   |
-   ├── Next.js UI
-   ├── Browser Market Engine
-   ├── Web Workers
-   └── Serverless Route Handlers (news/macro)
-```
-
-No Railway.
-No Google Cloud VM.
-No servidor always-on.
-No base de datos.
-
-Coste objetivo inicial: **USD 0**.
-
----
-
-## 22. Migración desde MVP v1 existente
-
-Actualmente existe un backend FastAPI funcional con Binance/Bybit.
-
-La migración NO debe tirar conocimiento útil.
-
-Reutilizar conceptualmente:
-
-- normalización;
-- symbol mapper;
-- sequence validation;
-- liquidation mapping;
-- reconnection strategy;
-- tests/parsers cuando puedan portarse a TypeScript.
-
-### Estrategia
-
-1. implementar adapters TypeScript browser-side para Binance y Bybit;
-2. comprobar conexiones reales desde navegador;
-3. crear MarketConnectionManager/worker;
-4. migrar dashboard para depender del Browser Market Engine;
-5. comprobar paridad funcional con MVP v1;
-6. recién entonces eliminar dependencia de `NEXT_PUBLIC_API_URL` y `NEXT_PUBLIC_WS_URL`;
-7. mantener `services/api` durante la migración;
-8. eliminar `services/api` en un PR posterior únicamente cuando el frontend ya no dependa de él y los tests browser-side sean suficientes.
-
-No eliminar FastAPI al inicio del refactor.
-
----
-
-## 23. Orden de implementación MVP v2
-
-### PR 2 — Browser market engine
-
-1. tipos normalizados TypeScript;
-2. Binance adapter browser-side;
-3. Bybit adapter browser-side;
-4. MarketConnectionManager;
-5. Web Worker/coalescing;
-6. reconnect/status;
-7. dashboard usa datos directos;
-8. tests.
-
-### PR 3 — Order book + liquidity heatmap
-
-1. aggregated order book;
-2. filters;
-3. snapshots históricos;
-4. IndexedDB;
-5. liquidity heatmap.
-
-### PR 4 — Observed + estimated liquidations
-
-1. feed live mejorado;
-2. agregaciones temporales;
-3. OI samples;
-4. estimated liquidation model v1;
-5. heatmap estimado.
-
-### PR 5 — News & Macro
-
-1. Vercel Route Handlers;
-2. FED;
-3. SEC;
-4. GDELT;
-5. BLS/BEA donde sea viable sin coste;
-6. classifier;
-7. News & Macro UI.
-
-### PR 6 — Exchanges adicionales
-
-1. BingX browser compatibility test;
-2. adapter si es viable;
-3. Bitunix browser compatibility test;
-4. adapter si es viable.
-
----
-
-## 24. Reglas para Codex
-
-- Este documento es la **fuente de verdad**.
-- No volver a introducir backend persistente.
-- No agregar PostgreSQL/Redis.
-- No consumir CoinGlass.
-- No implementar trading real.
-- No guardar información personal.
-- No inventar endpoints de exchanges.
-- Usar documentación oficial de cada fuente.
-- Verificar browser compatibility antes de declarar un exchange soportado.
-- No bloquear toda la app por una fuente caída.
-- No presentar Estimated Liquidation Heatmap como datos exactos.
-- Mantener scope de cada PR acotado.
-- Ejecutar tests, lint, typecheck y production build antes de terminar.
+Además, para cambios de feeds:
+
+- smoke test real en navegador;
+- comprobar Binance y Bybit con backend apagado;
+- cambiar entre varios símbolos;
+- verificar que no quedan WebSockets duplicados;
+- comprobar recuperación/reconexión;
+- comprobar que IndexedDB no rompe navegación privada o navegadores donde falle almacenamiento.
