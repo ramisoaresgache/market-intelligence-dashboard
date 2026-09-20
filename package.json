@@ -5,6 +5,7 @@
   "workspaces": ["apps/web"],
   "scripts": {
     "dev:web": "npm run dev --workspace @market-intelligence/web",
+    "test": "npm run test --workspace @market-intelligence/web",
     "build:web": "npm run build --workspace @market-intelligence/web",
     "lint": "npm run lint --workspace @market-intelligence/web",
     "typecheck": "npm run typecheck --workspace @market-intelligence/web"
