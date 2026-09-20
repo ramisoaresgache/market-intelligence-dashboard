@@ -1,24 +1,30 @@
-import { MARKET_SYMBOLS } from "./symbols";
+import { DEFAULT_SYMBOL, normalizeSymbol } from "./symbols";
 import type { MarketViewState, SourceStatus, WorkerCommand, WorkerEvent } from "./types";
 
 type Listener = () => void;
 
 const INITIAL_SOURCES: SourceStatus[] = [
-  { exchange: "binance", connected: false, state: "connecting", detail: "Waiting for worker" },
-  { exchange: "bybit", connected: false, state: "connecting", detail: "Waiting for worker" },
+  { exchange: "binance", connected: false, state: "connecting", detail: "Esperando motor de mercado" },
+  { exchange: "bybit", connected: false, state: "connecting", detail: "Esperando motor de mercado" },
 ];
 
-const INITIAL_STATE: MarketViewState = {
-  symbols: [...MARKET_SYMBOLS],
-  snapshots: {},
-  sources: INITIAL_SOURCES,
-  publishedAt: 0,
-};
+function initialState(symbol: string): MarketViewState {
+  return {
+    activeSymbol: symbol,
+    symbols: [symbol],
+    snapshots: {},
+    sources: INITIAL_SOURCES,
+    publishedAt: 0,
+  };
+}
+
+const SERVER_SNAPSHOT = initialState(DEFAULT_SYMBOL);
 
 export class MarketConnectionManager {
   private worker: Worker | null = null;
   private readonly listeners = new Set<Listener>();
-  private state = INITIAL_STATE;
+  private selectedSymbol = DEFAULT_SYMBOL;
+  private state = initialState(DEFAULT_SYMBOL);
   private shutdownTimer: ReturnType<typeof setTimeout> | null = null;
 
   subscribe = (listener: Listener): (() => void) => {
@@ -38,8 +44,19 @@ export class MarketConnectionManager {
   };
 
   getSnapshot = (): MarketViewState => this.state;
+  getServerSnapshot = (): MarketViewState => SERVER_SNAPSHOT;
 
-  getServerSnapshot = (): MarketViewState => INITIAL_STATE;
+  setSymbol(symbol: string): void {
+    const normalized = normalizeSymbol(symbol);
+    if (normalized === this.selectedSymbol) return;
+    this.selectedSymbol = normalized;
+    this.state = initialState(normalized);
+    this.notify();
+    if (this.worker) {
+      const command: WorkerCommand = { type: "set-symbol", symbol: normalized };
+      this.worker.postMessage(command);
+    }
+  }
 
   private ensureStarted(): void {
     if (this.worker || typeof window === "undefined") return;
@@ -62,7 +79,7 @@ export class MarketConnectionManager {
           })),
         };
       }
-      for (const listener of this.listeners) listener();
+      this.notify();
     };
     this.worker.onerror = (error) => {
       this.state = {
@@ -71,13 +88,17 @@ export class MarketConnectionManager {
           ...source,
           connected: false,
           state: "unavailable",
-          detail: error.message || "Market worker failed",
+          detail: error.message || "Falló el motor de mercado",
         })),
       };
-      for (const listener of this.listeners) listener();
+      this.notify();
     };
-    const command: WorkerCommand = { type: "start" };
+    const command: WorkerCommand = { type: "start", symbol: this.selectedSymbol };
     this.worker.postMessage(command);
+  }
+
+  private notify(): void {
+    for (const listener of this.listeners) listener();
   }
 
   private stop(): void {
@@ -86,7 +107,7 @@ export class MarketConnectionManager {
     this.worker.postMessage(command);
     this.worker.terminate();
     this.worker = null;
-    this.state = INITIAL_STATE;
+    this.state = initialState(this.selectedSymbol);
   }
 }
 
