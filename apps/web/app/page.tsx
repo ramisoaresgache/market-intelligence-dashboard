@@ -1,7 +1,7 @@
 "use client";
 
-import type { MarketSnapshot } from "./types";
-import { useMarketStream } from "./use-market-stream";
+import type { MarketSnapshot, SourceStatus } from "../lib/market/types";
+import { useMarketEngine } from "../lib/market/use-market-engine";
 
 const compact = new Intl.NumberFormat("en-US", {
   notation: "compact",
@@ -13,8 +13,8 @@ const price = new Intl.NumberFormat("en-US", {
 });
 
 export default function Dashboard() {
-  const { snapshots, connection, symbols } = useMarketStream();
-  const sources = Object.values(snapshots)[0]?.sources ?? [];
+  const { snapshots, sources, symbols } = useMarketEngine();
+  const connection = overallState(sources);
 
   return (
     <main>
@@ -25,8 +25,13 @@ export default function Dashboard() {
         </div>
         <div className="status-cluster">
           {sources.map((source) => (
-            <span className={`source ${source.connected ? "up" : "down"}`} key={source.exchange}>
-              <i /> {source.exchange}
+            <span
+              className={`source ${source.connected ? "up" : "down"}`}
+              key={source.exchange}
+              title={source.detail}
+              data-testid={`source-${source.exchange}`}
+            >
+              <i /> {source.exchange} · {source.state}
             </span>
           ))}
           <span className={`connection ${connection}`}>{connection}</span>
@@ -48,7 +53,12 @@ export default function Dashboard() {
 
       <section className="market-grid" aria-label="Markets">
         {symbols.map((symbol) => (
-          <MarketCard key={symbol} symbol={symbol} snapshot={snapshots[symbol]} />
+          <MarketCard
+            key={symbol}
+            symbol={symbol}
+            snapshot={snapshots[symbol]}
+            sources={sources}
+          />
         ))}
       </section>
 
@@ -59,11 +69,19 @@ export default function Dashboard() {
     </main>
   );
 }
-function MarketCard({ symbol, snapshot }: { symbol: string; snapshot?: MarketSnapshot }) {
+function MarketCard({
+  symbol,
+  snapshot,
+  sources,
+}: {
+  symbol: string;
+  snapshot?: MarketSnapshot;
+  sources: SourceStatus[];
+}) {
   const bybit = snapshot?.metrics.find((metric) => metric.exchange === "bybit");
   const binance = snapshot?.metrics.find((metric) => metric.exchange === "binance");
-  const mark = bybit?.mark_price ?? bybit?.last_price ?? null;
-  const books = snapshot?.order_books ?? [];
+  const mark = bybit?.markPrice ?? bybit?.lastPrice ?? null;
+  const books = snapshot?.orderBooks ?? [];
   const bestBid = max(books.flatMap((book) => book.bids.slice(0, 1).map((level) => level.price)));
   const bestAsk = min(books.flatMap((book) => book.asks.slice(0, 1).map((level) => level.price)));
   const liquidations = snapshot?.liquidations ?? [];
@@ -98,10 +116,10 @@ function MarketCard({ symbol, snapshot }: { symbol: string; snapshot?: MarketSna
       </div>
 
       <div className="metric-grid">
-        <Metric label="BYBIT OI" value={money(bybit?.open_interest_value)} />
-        <Metric label="BINANCE OI" value={number(binance?.open_interest)} />
-        <Metric label="FUNDING" value={funding(bybit?.funding_rate)} tone={fundingTone(bybit?.funding_rate)} />
-        <Metric label="NEXT FUNDING" value={bybit?.next_funding_time ? time(bybit.next_funding_time) : "—"} />
+        <Metric label="BYBIT OI" value={money(bybit?.openInterestValue)} />
+        <Metric label="BINANCE OI" value={number(binance?.openInterest)} />
+        <Metric label="FUNDING" value={funding(bybit?.fundingRate)} tone={fundingTone(bybit?.fundingRate)} />
+        <Metric label="NEXT FUNDING" value={bybit?.nextFundingTime ? time(bybit.nextFundingTime) : "—"} />
       </div>
 
       <div className="liquidations">
@@ -114,12 +132,18 @@ function MarketCard({ symbol, snapshot }: { symbol: string; snapshot?: MarketSna
 
       <div className="exchange-row">
         {["binance", "bybit"].map((exchange) => {
-          const source = snapshot?.sources.find((item) => item.exchange === exchange);
+          const source = sources.find((item) => item.exchange === exchange);
           return <span key={exchange} className={source?.connected ? "healthy" : "unavailable"}>{exchange}</span>;
         })}
       </div>
     </article>
   );
+}
+
+function overallState(sources: SourceStatus[]): "connecting" | "live" | "reconnecting" {
+  if (sources.length > 0 && sources.every((source) => source.connected)) return "live";
+  if (sources.some((source) => source.state === "reconnecting")) return "reconnecting";
+  return "connecting";
 }
 
 function Metric({ label, value, tone = "" }: { label: string; value: string; tone?: string }) {
