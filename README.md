@@ -1,96 +1,83 @@
 # Market Intelligence Dashboard
 
-Plataforma pública y **read-only** de inteligencia de mercados crypto.
+Plataforma pública y **solo lectura** de inteligencia de mercados crypto, desplegada en Vercel y diseñada para operar con coste de infraestructura inicial de **USD 0**.
 
-El objetivo es concentrar en una sola web datos que normalmente están repartidos entre exchanges, CoinGlass, Investing y múltiples fuentes de noticias/macro, pero sin depender de CoinGlass ni de un backend persistente pago.
+La interfaz está orientada a español y busca centralizar información que normalmente obliga a abrir exchanges, CoinGlass, Investing y fuentes de noticias/macro por separado.
 
-## Fuente de verdad
-
-La especificación actual del proyecto está en:
-
-`docs/Market_Intelligence_Dashboard_Especificacion_MVP.md`
-
-La arquitectura vigente es **frontend-first** y está diseñada para funcionar con coste de infraestructura inicial de **USD 0**.
-
-## Arquitectura actual (PR 2)
+## Arquitectura actual
 
 ```text
 Vercel / Next.js
       │
       ├── Browser Market Engine
-      │     ├── Binance WebSocket
-      │     └── Bybit WebSocket
+      │     ├── Binance USD-M WS/REST
+      │     └── Bybit Linear WS/REST
       │
-      └── Web Worker
-            └── snapshots UI cada 150 ms
+      ├── Web Worker
+      │     └── datos de alta frecuencia -> snapshot UI cada ~150 ms
+      │
+      └── IndexedDB
+            └── historial local de liquidez
 ```
 
-El dashboard ya consume Binance USD-M y Bybit Linear directamente desde el navegador. No necesita `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_WS_URL` ni FastAPI levantado.
+No hace falta Railway, Google Cloud, PostgreSQL, Redis ni un backend persistente.
 
-Un único `MarketConnectionManager` por pestaña inicia un Web Worker. El worker mantiene las conexiones, valida y normaliza los order books a frecuencia nativa, conserva el estado y publica un snapshot coalescido hacia React cada 150 ms. Cada exchange reconecta de forma independiente con backoff, por lo que una caída parcial no detiene la otra fuente.
+## Mercados
 
-El backend FastAPI permanece en `services/api` sólo como referencia de migración y no fue eliminado en este PR.
+El navegador consulta los instrumentos públicos de Binance y Bybit y construye dinámicamente el universo de **perpetuos USDT que están activos en ambos exchanges**. BTC, ETH, SOL, BNB, XRP y DOGE aparecen como accesos rápidos, pero el selector puede contener cientos de pares compatibles.
 
-### Fuentes browser-side implementadas
+Para mantener el consumo razonable, sólo se abren streams pesados de order book para **el par seleccionado**. Al cambiar de moneda, el Web Worker cierra los streams anteriores y abre los del nuevo mercado.
 
-- Binance USD-M: depth incremental + snapshot REST, `!forceOrder@arr` y open interest REST.
-- Bybit Linear: `orderbook.50`, `allLiquidation` y `tickers` (mark/last, open interest y funding).
-- Símbolos: BTCUSDT, ETHUSDT y SOLUSDT.
+Si la consulta del universo falla, existe una lista de respaldo con los principales pares.
 
-Las liquidaciones de Binance se etiquetan como cobertura parcial (`snapshot`). Las de Bybit se etiquetan como cobertura completa declarada por la fuente (`all`).
+## Módulos implementados
 
-## Módulos objetivo
+- precio de marca / último precio;
+- mejor compra y mejor venta;
+- open interest Binance y Bybit;
+- funding de Bybit;
+- liquidaciones observadas en vivo;
+- order book de Binance y Bybit;
+- **order book agregado**, con filtro Todos / Binance / Bybit;
+- buckets de precio automáticos según el valor del activo;
+- **Liquidity Heatmap** browser-side;
+- historial local del heatmap en IndexedDB;
+- ventanas de 30 min, 1 h, 2 h y 4 h;
+- estado de conexión por fuente;
+- UI responsive en español.
 
-- BTC / ETH / SOL live
-- Order Book por exchange y agregado
-- Observed Liquidations
-- Liquidity Heatmap
-- Estimated Liquidation Heatmap propio
-- Open Interest
-- Funding
-- noticias de alto impacto
-- FED / SEC
-- calendario macro
-- overview de mercado
+## Qué representa el mapa de liquidez
 
-## Regla clave
+El **Liquidity Heatmap** representa órdenes limit visibles de los order books públicos. No representa liquidaciones futuras ni garantiza que una pared vaya a permanecer o ejecutarse.
 
-No confundir:
+El navegador toma una muestra aproximadamente cada 5 segundos, la agrega por price buckets y conserva hasta 4 horas en IndexedDB. Por lo tanto, el historial es local a cada navegador y empieza a construirse desde que el visitante usa la web.
 
-- **Liquidity Heatmap**: órdenes limit visibles reales.
-- **Observed Liquidations**: liquidaciones reportadas por exchanges.
-- **Estimated Liquidation Heatmap**: modelo propio de zonas potenciales, no dato exacto.
+## Liquidaciones observadas
 
-## Estado del repositorio
+- Bybit `allLiquidation`: se etiqueta como cobertura `all` según la documentación de la fuente.
+- Binance `!forceOrder@arr`: se etiqueta como `snapshot`, ya que su cobertura es parcial.
 
-La primera versión implementó un backend FastAPI con Binance y Bybit. Esa implementación se conserva temporalmente como referencia mientras se migra a browser-side.
+No se presentan ambas fuentes como si tuvieran la misma completitud.
 
-No eliminar `services/api` hasta comprobar paridad funcional en el frontend.
+## Pendiente
 
-## Deploy
+Siguientes módulos previstos:
 
-Objetivo MVP v2:
-
-```text
-GitHub -> Vercel
-```
-
-Sin Railway.
-Sin Google Cloud VM.
-Sin PostgreSQL.
-Sin Redis.
-Sin servidor always-on.
+1. Estimated Liquidation Heatmap propio.
+2. BingX y Bitunix si sus streams browser-side resultan compatibles.
+3. Noticias relevantes.
+4. FED / SEC.
+5. Calendario macro.
+6. Overview general de mercado.
 
 ## Desarrollo
-
-Frontend:
 
 ```bash
 npm install
 npm run dev:web
 ```
 
-Abrir `http://localhost:3000`. No hay variables de entorno obligatorias y no hace falta iniciar `services/api`.
+Abrir `http://localhost:3000`.
 
 Validaciones:
 
@@ -101,16 +88,16 @@ npm run typecheck
 npm run build:web
 ```
 
-### Compatibilidad browser verificada
+No hay variables de entorno obligatorias para el market engine.
 
-Smoke test local realizado con FastAPI apagado:
+## Fuente de verdad
 
-- Binance WebSocket y REST públicos: conexión directa correcta desde navegador.
-- Bybit WebSocket público: conexión directa correcta desde navegador.
-- No se observaron bloqueos de `Origin` ni de CORS para las fuentes usadas.
+La especificación funcional/técnica vive en:
 
-La disponibilidad final sigue dependiendo de la red del visitante y de los endpoints públicos de cada exchange. La UI muestra el estado `connecting`, `live` o `reconnecting` por fuente.
+`docs/Market_Intelligence_Dashboard_Especificacion_MVP.md`
 
-Las instrucciones específicas de migración se encuentran en:
+Regla conceptual fundamental:
 
-`docs/CODEX_TASK_FRONTEND_FIRST.md`
+- **Liquidity Heatmap** = órdenes limit visibles.
+- **Observed Liquidations** = liquidaciones reportadas por exchanges.
+- **Estimated Liquidation Heatmap** = modelo propio futuro de zonas potenciales, nunca dato exacto.
