@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Market Intelligence",
-  description: "Live read-only crypto derivatives market intelligence",
+  description: "Panel público en español de liquidez, derivados y liquidaciones de criptomonedas en tiempo real",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
