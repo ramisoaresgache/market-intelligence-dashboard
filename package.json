@@ -1,0 +1,15 @@
+{
+  "name": "market-intelligence-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["apps/web"],
+  "scripts": {
+    "dev:web": "npm run dev --workspace @market-intelligence/web",
+    "build:web": "npm run build --workspace @market-intelligence/web",
+    "lint": "npm run lint --workspace @market-intelligence/web",
+    "typecheck": "npm run typecheck --workspace @market-intelligence/web"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  }
+}
