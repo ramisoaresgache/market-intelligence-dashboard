@@ -102,13 +102,9 @@ async function fetchBybitDataset(
   start: number,
   end: number,
 ): Promise<ExchangeDataset> {
-  const [candles, openInterest] = await Promise.all([
-    fetchBybitCandles(symbol, start, end),
-    fetchBybitOpenInterest(symbol, start, end),
-  ]);
-  if (!candles.length || !openInterest.length) {
-    throw new Error("histórico insuficiente");
-  }
+  const candles = await fetchBybitCandles(symbol, start, end);
+  const openInterest = await fetchBybitOpenInterest(symbol, start, end, candles);
+  if (!candles.length || !openInterest.length) throw new Error("histórico insuficiente");
   return { exchange: "bybit", candles, openInterest };
 }
 
@@ -117,13 +113,9 @@ async function fetchBinanceDataset(
   start: number,
   end: number,
 ): Promise<ExchangeDataset> {
-  const [candles, openInterest] = await Promise.all([
-    fetchBinanceCandles(symbol, start, end),
-    fetchBinanceOpenInterest(symbol, start, end),
-  ]);
-  if (!candles.length || !openInterest.length) {
-    throw new Error("histórico insuficiente");
-  }
+  const candles = await fetchBinanceCandles(symbol, start, end);
+  const openInterest = await fetchBinanceOpenInterest(symbol, start, end, candles);
+  if (!candles.length || !openInterest.length) throw new Error("histórico insuficiente");
   return { exchange: "binance", candles, openInterest };
 }
 
@@ -166,6 +158,7 @@ async function fetchBybitOpenInterest(
   symbol: string,
   start: number,
   end: number,
+  candles: HistoricalCandle[],
 ): Promise<HistoricalOpenInterestPoint[]> {
   const raw: Array<{ ts: number; openInterest: number }> = [];
   let cursor = "";
@@ -207,15 +200,11 @@ async function fetchBybitOpenInterest(
     if (!cursor) break;
   }
 
-  const candles = await fetchBybitCandles(symbol, start, end);
   return raw
-    .map((point) => {
-      const close = nearestClose(candles, point.ts);
-      return {
-        ts: point.ts,
-        openInterestUsd: point.openInterest * close,
-      };
-    })
+    .map((point) => ({
+      ts: point.ts,
+      openInterestUsd: point.openInterest * nearestClose(candles, point.ts),
+    }))
     .filter((point) => Number.isFinite(point.openInterestUsd) && point.openInterestUsd > 0)
     .sort((a, b) => a.ts - b.ts);
 }
@@ -253,6 +242,7 @@ async function fetchBinanceOpenInterest(
   symbol: string,
   start: number,
   end: number,
+  candles: HistoricalCandle[],
 ): Promise<HistoricalOpenInterestPoint[]> {
   const params = new URLSearchParams({
     symbol,
@@ -270,7 +260,6 @@ async function fetchBinanceOpenInterest(
     sumOpenInterest?: string;
     sumOpenInterestValue?: string;
   }>;
-  const candles = await fetchBinanceCandles(symbol, start, end);
 
   return payload
     .map((item) => {
