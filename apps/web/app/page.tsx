@@ -10,7 +10,9 @@ import {
 import { DEFAULT_SYMBOL } from "../lib/market/symbols";
 import type {
   AggregatedOrderLevel,
+  Exchange,
   MarketInstrument,
+  NormalizedOrderBook,
   SourceStatus,
 } from "../lib/market/types";
 import { loadMarketUniverse } from "../lib/market/universe";
@@ -57,14 +59,11 @@ export default function Dashboard() {
   const binance = snapshot?.metrics.find((metric) => metric.exchange === "binance");
   const currentPrice =
     bybit?.markPrice ?? binance?.markPrice ?? bybit?.lastPrice ?? midpointFromBooks(books);
-  const aggregatedAll = useMemo(() => aggregateOrderBooks(books, "all", undefined, 24), [books]);
   const aggregated = useMemo(
     () => aggregateOrderBooks(books, exchangeFilter, undefined, 24),
     [books, exchangeFilter],
   );
-  const bestBid = aggregatedAll.bids[0]?.price ?? null;
-  const bestAsk = aggregatedAll.asks[0]?.price ?? null;
-  const spread = bestBid !== null && bestAsk !== null ? Math.max(0, bestAsk - bestBid) : null;
+  const referenceTop = useMemo(() => bestConsistentTop(books), [books]);
   const liquidations = snapshot?.liquidations ?? [];
   const longLiquidations = liquidations
     .filter((item) => item.side === "long")
@@ -161,9 +160,12 @@ export default function Dashboard() {
           <small>{snapshot?.ts ? `Actualizado ${formatTime(snapshot.ts)}` : "Esperando datos…"}</small>
         </div>
         <div className="summary-strip">
-          <Metric label="Mejor compra agregada" value={formatPrice(bestBid)} tone="positive" />
-          <Metric label="Mejor venta agregada" value={formatPrice(bestAsk)} tone="negative" />
-          <Metric label="Spread agregado" value={formatPrice(spread)} />
+          <Metric label="Mejor compra de referencia" value={formatPrice(referenceTop?.bid)} tone="positive" />
+          <Metric label="Mejor venta de referencia" value={formatPrice(referenceTop?.ask)} tone="negative" />
+          <Metric
+            label={referenceTop ? `Spread · ${referenceTop.exchange}` : "Spread"}
+            value={formatPrice(referenceTop?.spread)}
+          />
           <Metric label="Interés abierto Bybit (USD)" value={formatMoney(bybit?.openInterestValue)} />
           <Metric label="Interés abierto Binance (USD)" value={formatMoney(binance?.openInterestValue)} />
           <Metric
@@ -340,6 +342,21 @@ function Metric({ label, value, tone = "" }: { label: string; value: string; ton
       <b className={tone}>{value}</b>
     </div>
   );
+}
+
+function bestConsistentTop(
+  books: NormalizedOrderBook[],
+): { exchange: Exchange; bid: number; ask: number; spread: number } | null {
+  const candidates = books.flatMap((book) => {
+    const bid = book.bids[0]?.price;
+    const ask = book.asks[0]?.price;
+    if (bid == null || ask == null || !Number.isFinite(bid) || !Number.isFinite(ask) || ask < bid) {
+      return [];
+    }
+    return [{ exchange: book.exchange, bid, ask, spread: ask - bid }];
+  });
+  if (!candidates.length) return null;
+  return candidates.reduce((best, item) => (item.spread < best.spread ? item : best));
 }
 
 function connectionLabel(source: SourceStatus): string {
