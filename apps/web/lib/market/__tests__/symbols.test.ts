@@ -1,15 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { normalizeSymbol, toBinanceSymbol, toBybitSymbol } from "../symbols";
+import { baseCoinFromSymbol, normalizeSymbol, toBinanceSymbol, toBybitSymbol } from "../symbols";
 
-describe("symbol mapping", () => {
-  it("normalizes supported symbols for each exchange", () => {
+describe("mapeo de símbolos", () => {
+  it("normaliza cualquier perpetuo USDT válido", () => {
     expect(normalizeSymbol("btc-usdt")).toBe("BTCUSDT");
-    expect(normalizeSymbol("eth/usdt")).toBe("ETHUSDT");
-    expect(toBinanceSymbol("SOLUSDT")).toBe("solusdt");
-    expect(toBybitSymbol("sol-usdt")).toBe("SOLUSDT");
+    expect(normalizeSymbol("doge/usdt")).toBe("DOGEUSDT");
+    expect(toBinanceSymbol("SUIUSDT")).toBe("suiusdt");
+    expect(toBybitSymbol("pepe-usdt")).toBe("PEPEUSDT");
+    expect(baseCoinFromSymbol("AVAXUSDT")).toBe("AVAX");
   });
 
-  it("rejects unsupported symbols", () => {
-    expect(() => normalizeSymbol("DOGEUSDT")).toThrow("Unsupported symbol");
+  it("rechaza símbolos que no sean pares USDT válidos", () => {
+    expect(() => normalizeSymbol("BTCUSD")).toThrow("Símbolo no válido");
+    expect(() => normalizeSymbol("???")).toThrow("Símbolo no válido");
   });
 });
