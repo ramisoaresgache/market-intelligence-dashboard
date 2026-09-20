@@ -15,7 +15,15 @@ interface LiquidationHeatmapProps {
   source: LiquidationMapSource;
 }
 
+interface RequestState {
+  key: string;
+  payload: LiquidationMapPayload | null;
+  error: string | null;
+}
+
 interface HoverInfo {
+  requestKey: string;
+  canvasWidth: number;
   x: number;
   y: number;
   ts: number;
@@ -39,19 +47,28 @@ interface Geometry {
   maxTs: number;
 }
 
+type ColorStop = {
+  p: number;
+  rgb: readonly [number, number, number];
+};
+
 export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [payload, setPayload] = useState<LiquidationMapPayload | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const requestKey = `${symbol}-${hours}-${source}`;
+  const [requestState, setRequestState] = useState<RequestState>({
+    key: "",
+    payload: null,
+    error: null,
+  });
   const [hover, setHover] = useState<HoverInfo | null>(null);
+  const isCurrent = requestState.key === requestKey;
+  const payload = isCurrent ? requestState.payload : null;
+  const error = isCurrent ? requestState.error : null;
+  const loading = !isCurrent || (payload === null && error === null);
 
   useEffect(() => {
     const controller = new AbortController();
     const params = new URLSearchParams({ symbol, hours: String(hours), source });
-    setLoading(true);
-    setError(null);
-    setHover(null);
 
     void fetch(`/api/liquidation-map?${params.toString()}`, {
       signal: controller.signal,
@@ -62,17 +79,22 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
         if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
         return data;
       })
-      .then((data) => setPayload(data))
-      .catch((reason: unknown) => {
-        if (reason instanceof DOMException && reason.name === "AbortError") return;
-        setError(reason instanceof Error ? reason.message : "No se pudo cargar el mapa");
+      .then((data) => {
+        if (!controller.signal.aborted) {
+          setRequestState({ key: requestKey, payload: data, error: null });
+        }
       })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
+      .catch((reason: unknown) => {
+        if (controller.signal.aborted) return;
+        setRequestState({
+          key: requestKey,
+          payload: null,
+          error: reason instanceof Error ? reason.message : "No se pudo cargar el mapa",
+        });
       });
 
     return () => controller.abort();
-  }, [symbol, hours, source]);
+  }, [hours, requestKey, source, symbol]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -128,6 +150,8 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
     const strongest = [...active].sort((a, b) => b.exposureUsd - a.exposureUsd)[0];
 
     setHover({
+      requestKey,
+      canvasWidth: rect.width,
       x,
       y,
       ts,
@@ -138,6 +162,8 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
       leverage: strongest ? `${strongest.leverage}x` : "—",
     });
   }
+
+  const activeHover = hover?.requestKey === requestKey ? hover : null;
 
   return (
     <div className={styles.shell}>
@@ -160,29 +186,29 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
         {loading && <div className={styles.overlay}>Calculando zonas de liquidación estimadas…</div>}
         {error && <div className={`${styles.overlay} ${styles.error}`}>{error}</div>}
 
-        {hover && !loading && !error && (
+        {activeHover && !loading && !error && (
           <div
             className={styles.tooltip}
             style={{
-              left: `${Math.min(hover.x + 14, (canvasRef.current?.clientWidth ?? 500) - 205)}px`,
-              top: `${Math.max(8, hover.y - 92)}px`,
+              left: `${Math.min(activeHover.x + 14, activeHover.canvasWidth - 205)}px`,
+              top: `${Math.max(8, activeHover.y - 92)}px`,
             }}
           >
-            <b>{formatPrice(hover.price)}</b>
-            <span>{formatTime(hover.ts)}</span>
+            <b>{formatPrice(activeHover.price)}</b>
+            <span>{formatTime(activeHover.ts)}</span>
             <div>
               <span>Exposición estimada</span>
-              <strong>{formatMoney(hover.exposureUsd)}</strong>
+              <strong>{formatMoney(activeHover.exposureUsd)}</strong>
             </div>
             <div>
               <span>Longs / Shorts</span>
               <strong>
-                {formatMoney(hover.longExposureUsd)} / {formatMoney(hover.shortExposureUsd)}
+                {formatMoney(activeHover.longExposureUsd)} / {formatMoney(activeHover.shortExposureUsd)}
               </strong>
             </div>
             <div>
               <span>Apalancamiento dominante</span>
-              <strong>{hover.leverage}</strong>
+              <strong>{activeHover.leverage}</strong>
             </div>
           </div>
         )}
@@ -400,15 +426,15 @@ function priceToY(price: number, geometry: Geometry): number {
 
 function intensityColor(intensity: number): string {
   const clamped = clamp(intensity, 0, 1);
-  const stops = [
+  const stops: ColorStop[] = [
     { p: 0, rgb: [59, 15, 92] },
     { p: 0.28, rgb: [47, 72, 156] },
     { p: 0.52, rgb: [26, 158, 176] },
     { p: 0.75, rgb: [70, 196, 104] },
     { p: 1, rgb: [238, 226, 32] },
-  ] as const;
-  let left = stops[0];
-  let right = stops[stops.length - 1];
+  ];
+  let left = stops[0] as ColorStop;
+  let right = stops[stops.length - 1] as ColorStop;
   for (let index = 0; index < stops.length - 1; index += 1) {
     const candidateLeft = stops[index];
     const candidateRight = stops[index + 1];
