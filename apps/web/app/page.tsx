@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { LiquidityHeatmap } from "../components/liquidity-heatmap";
+import { LiquidationHeatmap } from "../components/liquidation-heatmap";
 import {
   aggregateOrderBooks,
   midpointFromBooks,
   type ExchangeFilter,
 } from "../lib/market/engine/aggregate";
+import type { LiquidationMapSource } from "../lib/market/liquidation-model";
 import { DEFAULT_SYMBOL } from "../lib/market/symbols";
 import type {
   AggregatedOrderLevel,
@@ -16,18 +17,17 @@ import type {
   SourceStatus,
 } from "../lib/market/types";
 import { loadMarketUniverse } from "../lib/market/universe";
-import { useLiquidityHistory } from "../lib/market/use-liquidity-history";
 import { setMarketSymbol, useMarketEngine } from "../lib/market/use-market-engine";
 
 const compact = new Intl.NumberFormat("es-AR", {
   notation: "compact",
   maximumFractionDigits: 2,
 });
-const HISTORY_OPTIONS = [
-  { label: "30 min", value: 30 * 60 * 1000 },
-  { label: "1 h", value: 60 * 60 * 1000 },
-  { label: "2 h", value: 2 * 60 * 60 * 1000 },
-  { label: "4 h", value: 4 * 60 * 60 * 1000 },
+const LIQUIDATION_HOURS = [4, 12, 24] as const;
+const LIQUIDATION_SOURCES: Array<{ value: LiquidationMapSource; label: string }> = [
+  { value: "aggregate", label: "Agregado" },
+  { value: "binance", label: "Binance" },
+  { value: "bybit", label: "Bybit" },
 ];
 const QUICK_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT"];
 
@@ -36,7 +36,8 @@ export default function Dashboard() {
   const [universe, setUniverse] = useState<MarketInstrument[]>([]);
   const [selectedSymbol, setSelectedSymbol] = useState(DEFAULT_SYMBOL);
   const [exchangeFilter, setExchangeFilter] = useState<ExchangeFilter>("all");
-  const [historyWindow, setHistoryWindow] = useState(HISTORY_OPTIONS[1].value);
+  const [liquidationHours, setLiquidationHours] = useState<(typeof LIQUIDATION_HOURS)[number]>(24);
+  const [liquidationSource, setLiquidationSource] = useState<LiquidationMapSource>("aggregate");
 
   useEffect(() => {
     let active = true;
@@ -54,7 +55,6 @@ export default function Dashboard() {
 
   const snapshot = snapshots[selectedSymbol];
   const books = snapshot?.orderBooks ?? [];
-  const history = useLiquidityHistory(selectedSymbol, books);
   const bybit = snapshot?.metrics.find((metric) => metric.exchange === "bybit");
   const binance = snapshot?.metrics.find((metric) => metric.exchange === "binance");
   const currentPrice =
@@ -102,7 +102,7 @@ export default function Dashboard() {
       <section className="selector-panel">
         <div className="selector-copy">
           <span className="kicker">MERCADO</span>
-          <h2>Elegí una moneda y analizá su liquidez en vivo.</h2>
+          <h2>Elegí una moneda y analizá el mercado en vivo.</h2>
           <p>
             Se muestran perpetuos USDT disponibles tanto en Binance como en Bybit. El libro pesado
             se conecta sólo para el mercado seleccionado para mantener la página rápida incluso con
@@ -178,34 +178,48 @@ export default function Dashboard() {
 
       <section className="dashboard-grid">
         <article className="panel heatmap-panel">
-          <div className="panel-head">
+          <div className="panel-head liquidation-panel-head">
             <div>
-              <span className="kicker">MAPA DE LIQUIDEZ</span>
-              <h3>Dónde se concentra la liquidez y cuánto tiempo permanece</h3>
+              <span className="kicker">MAPA DE LIQUIDACIONES ESTIMADAS</span>
+              <h3>Zonas donde podría concentrarse el riesgo de liquidación</h3>
               <p>
-                Cada franja horizontal representa órdenes limit visibles en una zona de precio.
-                Verde = compras, rojo = ventas y mayor intensidad = mayor nocional. A la derecha se
-                muestra el perfil de liquidez actual.
+                Las bandas muestran exposición estimada por nivel de precio a partir de velas,
+                volumen e interés abierto. Las velas se dibujan encima para mantener el contexto del
+                movimiento real del mercado.
               </p>
             </div>
-            <div className="segmented">
-              {HISTORY_OPTIONS.map((option) => (
-                <button
-                  type="button"
-                  key={option.value}
-                  className={historyWindow === option.value ? "active" : ""}
-                  onClick={() => setHistoryWindow(option.value)}
-                >
-                  {option.label}
-                </button>
-              ))}
+            <div className="map-controls">
+              <div className="segmented">
+                {LIQUIDATION_SOURCES.map((option) => (
+                  <button
+                    type="button"
+                    key={option.value}
+                    className={liquidationSource === option.value ? "active" : ""}
+                    onClick={() => setLiquidationSource(option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <div className="segmented">
+                {LIQUIDATION_HOURS.map((hours) => (
+                  <button
+                    type="button"
+                    key={hours}
+                    className={liquidationHours === hours ? "active" : ""}
+                    onClick={() => setLiquidationHours(hours)}
+                  >
+                    {hours} h
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
-          <LiquidityHeatmap frames={history} windowMs={historyWindow} currentPrice={currentPrice} />
-          <div className="panel-footnote">
-            <span>{history.length} muestras locales</span>
-            <span>Una muestra cada 5 segundos · retención máxima 4 h</span>
-          </div>
+          <LiquidationHeatmap
+            symbol={selectedSymbol}
+            hours={liquidationHours}
+            source={liquidationSource}
+          />
         </article>
 
         <article className="panel orderbook-panel">
@@ -296,8 +310,8 @@ export default function Dashboard() {
       <footer>
         <span>INTELIGENCIA DE MERCADO · SOLO LECTURA</span>
         <span>
-          Los mapas muestran liquidez visible, no garantizan ejecución ni niveles de liquidación
-          futuros.
+          El mapa de liquidaciones es un modelo estimado con datos públicos, no una lista de
+          posiciones individuales ni una garantía de liquidaciones futuras.
         </span>
       </footer>
     </main>
