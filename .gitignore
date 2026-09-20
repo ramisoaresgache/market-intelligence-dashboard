@@ -1,0 +1,15 @@
+node_modules/
+.npm-cache/
+.next/
+coverage/
+.env
+.env.local
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.py[cod]
+*.egg-info/
+*.tsbuildinfo
+pytest-cache-files-*/
