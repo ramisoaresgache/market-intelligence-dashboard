@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { aggregateOrderBooks, autoBucketSize, buildLiquidityFrame } from "../engine/aggregate";
+import {
+  aggregateOrderBooks,
+  autoHeatmapBucketSize,
+  autoOrderBookBucketSize,
+  buildLiquidityFrame,
+} from "../engine/aggregate";
 import type { NormalizedOrderBook } from "../types";
 
 const books: NormalizedOrderBook[] = [
@@ -41,8 +46,10 @@ describe("libro agregado", () => {
     expect(frame?.levels.length).toBeGreaterThan(0);
   });
 
-  it("genera buckets automáticos positivos para distintos precios", () => {
-    expect(autoBucketSize(60_000)).toBeGreaterThan(0);
-    expect(autoBucketSize(0.1)).toBeGreaterThan(0);
+  it("usa un bucket más fino para el libro que para el heatmap", () => {
+    const orderBookBucket = autoOrderBookBucketSize(80_000);
+    const heatmapBucket = autoHeatmapBucketSize(80_000);
+    expect(orderBookBucket).toBeGreaterThan(0);
+    expect(heatmapBucket).toBeGreaterThan(orderBookBucket);
   });
 });
