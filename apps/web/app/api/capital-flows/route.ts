@@ -5,6 +5,22 @@ export const dynamic = "force-dynamic";
 const COINMETRICS_BASE = "https://community-api.coinmetrics.io/v4";
 const SOSOVALUE_BASE = "https://openapi.sosovalue.com/openapi/v1";
 const ETF_ASSETS = ["BTC", "ETH", "SOL"] as const;
+const HISTORY_DAYS = 370;
+
+const EXCHANGES = [
+  { id: "binance", name: "Binance", code: "BNB" },
+  { id: "coinbase", name: "Coinbase", code: "CBS" },
+  { id: "bitfinex", name: "Bitfinex", code: "BFX" },
+  { id: "kraken", name: "Kraken", code: "KRK" },
+  { id: "okx", name: "OKX", code: "OKX" },
+  { id: "gemini", name: "Gemini", code: "GEM" },
+  { id: "bybit", name: "Bybit", code: "BIT" },
+  { id: "gate", name: "Gate.io", code: "GIO" },
+  { id: "bitstamp", name: "Bitstamp", code: "BSP" },
+  { id: "kucoin", name: "KuCoin", code: "KCN" },
+  { id: "mexc", name: "MEXC", code: "MXC" },
+  { id: "bitmex", name: "BitMEX", code: "BMX" },
+] as const;
 
 type CoinMetricsRow = {
   time?: string;
@@ -15,6 +31,15 @@ type CoinMetricsRow = {
   SplyExNtv?: string;
   SplyExUSD?: string;
   PriceUSD?: string;
+  [metric: string]: string | undefined;
+};
+
+type ExchangeHistoryPoint = {
+  date: string;
+  reserveBtc: number | null;
+  inflowBtc: number | null;
+  outflowBtc: number | null;
+  priceUsd: number | null;
 };
 
 type SoSoEtfRow = {
@@ -52,6 +77,10 @@ export async function GET() {
       ? exchangeResult.value
       : (warnings.push(`Coin Metrics: ${errorMessage(exchangeResult.reason)}`), null);
 
+  if (bitcoinExchange?.exchangeDetailError) {
+    warnings.push(`Detalle por exchange: ${bitcoinExchange.exchangeDetailError}`);
+  }
+
   const etfs = ETF_ASSETS.map((asset, index) => {
     const result = etfResults[index];
     if (result.status === "fulfilled") return result.value;
@@ -74,7 +103,7 @@ export async function GET() {
       etfProviderConfigured: Boolean(sosoApiKey),
       methodology: {
         exchangeFlows:
-          "Coin Metrics FlowInEx/FlowOutEx: movimientos diarios de BTC hacia/desde direcciones identificadas como exchanges, excluyendo transferencias entre exchanges.",
+          "Coin Metrics FlowIn/FlowOut: BTC enviado hacia o retirado desde direcciones identificadas como exchanges. Sply mide BTC retenido en wallets identificadas del exchange. Las cifras son estimaciones on-chain y pueden subestimar saldos reales si faltan direcciones por identificar.",
         etfFlows:
           "SoSoValue ETF Summary History: flujo neto diario agregado de ETF spot de EE.UU. para BTC, ETH y SOL. El plan Demo es gratuito y requiere una API key server-side.",
       },
@@ -88,13 +117,13 @@ export async function GET() {
 }
 
 async function loadBitcoinExchangeFlows() {
-  const start = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const start = new Date(Date.now() - HISTORY_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const params = new URLSearchParams({
     assets: "btc",
     metrics: "FlowInExUSD,FlowOutExUSD,FlowInExNtv,FlowOutExNtv,SplyExNtv,SplyExUSD,PriceUSD",
     frequency: "1d",
     start_time: start,
-    page_size: "100",
+    page_size: "1000",
   });
 
   const response = await fetch(`${COINMETRICS_BASE}/timeseries/asset-metrics?${params}`, {
@@ -104,10 +133,16 @@ async function loadBitcoinExchangeFlows() {
   if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`.trim());
 
   const payload = (await response.json()) as { data?: CoinMetricsRow[] };
-  const rows = (payload.data ?? [])
-    .filter((row) => row.time)
-    .sort((a, b) => Date.parse(a.time ?? "") - Date.parse(b.time ?? ""));
+  const rows = sortRows(payload.data ?? []);
   if (!rows.length) throw new Error("Sin datos de exchange flows para BTC");
+
+  const history: ExchangeHistoryPoint[] = rows.map((row) => ({
+    date: row.time!,
+    reserveBtc: nullableNumber(row.SplyExNtv),
+    inflowBtc: nullableNumber(row.FlowInExNtv),
+    outflowBtc: nullableNumber(row.FlowOutExNtv),
+    priceUsd: nullableNumber(row.PriceUSD),
+  }));
 
   const latest = rows.at(-1)!;
   const recent7 = rows.slice(-7);
@@ -115,6 +150,14 @@ async function loadBitcoinExchangeFlows() {
   const outflowUsd = numberValue(latest.FlowOutExUSD);
   const inflowBtc = numberValue(latest.FlowInExNtv);
   const outflowBtc = numberValue(latest.FlowOutExNtv);
+
+  let exchanges: Awaited<ReturnType<typeof loadExchangeBreakdown>> = [];
+  let exchangeDetailError: string | null = null;
+  try {
+    exchanges = await loadExchangeBreakdown(start, history);
+  } catch (error) {
+    exchangeDetailError = errorMessage(error);
+  }
 
   return {
     available: true,
@@ -137,7 +180,79 @@ async function loadBitcoinExchangeFlows() {
       (sum, row) => sum + numberValue(row.FlowInExNtv) - numberValue(row.FlowOutExNtv),
       0,
     ),
+    history,
+    exchanges,
+    exchangeDetailAvailable: exchanges.length > 0,
+    exchangeDetailError,
   };
+}
+
+async function loadExchangeBreakdown(start: string, aggregateHistory: ExchangeHistoryPoint[]) {
+  const metrics = EXCHANGES.flatMap((exchange) => [
+    `Sply${exchange.code}Ntv`,
+    `FlowIn${exchange.code}Ntv`,
+    `FlowOut${exchange.code}Ntv`,
+  ]);
+  const params = new URLSearchParams({
+    assets: "btc",
+    metrics: metrics.join(","),
+    frequency: "1d",
+    start_time: start,
+    page_size: "1000",
+  });
+
+  const response = await fetch(`${COINMETRICS_BASE}/timeseries/asset-metrics?${params}`, {
+    headers: { Accept: "application/json" },
+    next: { revalidate: 900 },
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`.trim());
+
+  const payload = (await response.json()) as { data?: CoinMetricsRow[] };
+  const rows = sortRows(payload.data ?? []);
+  if (!rows.length) return [];
+
+  const priceByDate = new Map(aggregateHistory.map((point) => [point.date, point.priceUsd]));
+
+  return EXCHANGES.flatMap((exchange) => {
+    const reserveKey = `Sply${exchange.code}Ntv`;
+    const inflowKey = `FlowIn${exchange.code}Ntv`;
+    const outflowKey = `FlowOut${exchange.code}Ntv`;
+    const history = rows
+      .map((row) => ({
+        date: row.time!,
+        reserveBtc: nullableNumber(row[reserveKey]),
+        inflowBtc: nullableNumber(row[inflowKey]),
+        outflowBtc: nullableNumber(row[outflowKey]),
+        priceUsd: priceByDate.get(row.time!) ?? null,
+      }))
+      .filter((point) => point.reserveBtc != null || point.inflowBtc != null || point.outflowBtc != null);
+
+    const latest = [...history].reverse().find((point) => point.reserveBtc != null);
+    if (!latest?.reserveBtc) return [];
+
+    return [
+      {
+        id: exchange.id,
+        name: exchange.name,
+        balanceBtc: latest.reserveBtc,
+        change1dBtc: changeFrom(history, 1),
+        change7dBtc: changeFrom(history, 7),
+        change30dBtc: changeFrom(history, 30),
+        inflowBtc: latest.inflowBtc,
+        outflowBtc: latest.outflowBtc,
+        history,
+      },
+    ];
+  }).sort((a, b) => b.balanceBtc - a.balanceBtc);
+}
+
+function changeFrom(history: ExchangeHistoryPoint[], days: number): number | null {
+  const balances = history.filter((point) => point.reserveBtc != null);
+  if (balances.length <= days) return null;
+  const latest = balances.at(-1)?.reserveBtc;
+  const previous = balances.at(-(days + 1))?.reserveBtc;
+  if (latest == null || previous == null) return null;
+  return latest - previous;
 }
 
 async function loadSoSoValueFlows(asset: (typeof ETF_ASSETS)[number], apiKey: string) {
@@ -175,6 +290,12 @@ async function loadSoSoValueFlows(asset: (typeof ETF_ASSETS)[number], apiKey: st
     cumulativeFlowUsd: nullableNumber(latest.cum_net_inflow),
     valueTradedUsd: nullableNumber(latest.total_value_traded),
   };
+}
+
+function sortRows(rows: CoinMetricsRow[]) {
+  return rows
+    .filter((row) => row.time)
+    .sort((a, b) => Date.parse(a.time ?? "") - Date.parse(b.time ?? ""));
 }
 
 function extractSoSoRows(value: unknown): SoSoEtfRow[] {
