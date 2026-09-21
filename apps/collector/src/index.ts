@@ -1,13 +1,21 @@
 import { DurableObject } from "cloudflare:workers";
 
+const BINANCE_REST_PING = "https://fapi.binance.com/fapi/v1/ping";
 const BINANCE_ENDPOINTS = [
   {
+    id: "market-dynamic",
+    url: "https://fstream.binance.com/market/ws",
+    subscribe: true,
+  },
+  {
     id: "market-stream",
-    url: "wss://fstream.binance.com/market/stream?streams=!forceOrder@arr",
+    url: "https://fstream.binance.com/market/stream?streams=!forceOrder@arr",
+    subscribe: false,
   },
   {
     id: "market-raw",
-    url: "wss://fstream.binance.com/market/ws/!forceOrder@arr",
+    url: "https://fstream.binance.com/market/ws/!forceOrder@arr",
+    subscribe: false,
   },
 ] as const;
 const BYBIT_WS = "wss://stream.bybit.com/v5/public/linear";
@@ -15,6 +23,7 @@ const BUCKET_MS = 60_000;
 const ALARM_MS = 60_000;
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const BYBIT_PING_MS = 20_000;
+const BINANCE_REST_CHECK_MS = 5 * 60_000;
 const DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT"];
 const WINDOWS = [1, 4, 12, 24] as const;
 
@@ -59,6 +68,7 @@ type ExchangeState = {
   connected: boolean;
   connecting: boolean;
   endpoint: string | null;
+  transport: string | null;
   lastOpenedAt: number | null;
   lastClosedAt: number | null;
   closeCode: number | null;
@@ -67,6 +77,15 @@ type ExchangeState = {
   lastLiquidationAt: number | null;
   lastError: string | null;
   reconnects: number;
+  lastHandshakeAt: number | null;
+  handshakeStatus: number | null;
+  handshakeStatusText: string | null;
+  handshakeBody: string | null;
+  lastRestCheckAt: number | null;
+  restReachable: boolean | null;
+  restStatus: number | null;
+  restStatusText: string | null;
+  restError: string | null;
 };
 
 export default {
@@ -83,6 +102,7 @@ export default {
             "/bootstrap",
             "/v1/liquidations/symbols",
             "/v1/liquidations/summary?symbol=BTCUSDT",
+            "/v1/diagnostics/binance",
           ],
         }),
         env,
@@ -143,6 +163,15 @@ export class LiquidationCollector extends DurableObject<Env> {
       });
     }
 
+    if (url.pathname === "/v1/diagnostics/binance") {
+      return Response.json({
+        generatedAt: Date.now(),
+        endpointIndex: this.binanceEndpointIndex,
+        endpointCandidates: BINANCE_ENDPOINTS.map((endpoint) => ({ id: endpoint.id, url: endpoint.url })),
+        state: this.exchangeState.get("binance"),
+      });
+    }
+
     if (url.pathname === "/v1/liquidations/symbols") {
       return Response.json({ symbols: [...this.symbols] });
     }
@@ -194,60 +223,136 @@ export class LiquidationCollector extends DurableObject<Env> {
   }
 
   private async ensureConnections(): Promise<void> {
-    this.ensureBinance();
+    await this.ensureBinance();
     this.ensureBybit();
     await this.scheduleAlarm();
   }
 
-  private ensureBinance(): void {
+  private async ensureBinance(): Promise<void> {
     const current = this.sockets.get("binance");
     if (current && (current.readyState === WebSocket.OPEN || current.readyState === WebSocket.CONNECTING)) return;
 
-    const endpoint = BINANCE_ENDPOINTS[this.binanceEndpointIndex];
     const state = this.exchangeState.get("binance")!;
+    if (state.connecting) return;
+
     state.connecting = true;
     state.connected = false;
-    state.endpoint = endpoint.id;
-    const socket = new WebSocket(endpoint.url);
-    this.sockets.set("binance", socket);
+    state.transport = "fetch-upgrade";
 
-    socket.addEventListener("open", () => {
+    await this.refreshBinanceRestDiagnostic(state);
+
+    const endpoint = BINANCE_ENDPOINTS[this.binanceEndpointIndex];
+    state.endpoint = endpoint.id;
+    state.lastHandshakeAt = Date.now();
+    state.handshakeStatus = null;
+    state.handshakeStatusText = null;
+    state.handshakeBody = null;
+    state.closeCode = null;
+    state.closeReason = null;
+
+    try {
+      const response = await fetch(endpoint.url, {
+        headers: {
+          Upgrade: "websocket",
+        },
+      });
+
+      state.handshakeStatus = response.status;
+      state.handshakeStatusText = response.statusText || null;
+
+      const socket = response.webSocket;
+      if (!socket) {
+        state.handshakeBody = await responseSnippet(response);
+        state.lastError = `Binance rechazó ${endpoint.id}: HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+        state.connecting = false;
+        state.lastClosedAt = Date.now();
+        state.reconnects += 1;
+        this.rotateBinanceEndpoint();
+        await this.scheduleReconnect();
+        return;
+      }
+
+      socket.accept();
+      this.sockets.set("binance", socket);
       state.connected = true;
       state.connecting = false;
       state.lastOpenedAt = Date.now();
       state.lastError = null;
-    });
 
-    socket.addEventListener("message", (event) => {
-      try {
-        const liquidations = parseBinanceLiquidations(event.data);
-        for (const liquidation of liquidations) this.record(liquidation);
-        state.lastMessageAt = Date.now();
-        if (liquidations.length > 0) {
-          state.lastLiquidationAt = Math.max(...liquidations.map((liquidation) => liquidation.ts));
+      socket.addEventListener("message", (event) => {
+        try {
+          const liquidations = parseBinanceLiquidations(event.data);
+          for (const liquidation of liquidations) this.record(liquidation);
+          state.lastMessageAt = Date.now();
+          if (liquidations.length > 0) {
+            state.lastLiquidationAt = Math.max(...liquidations.map((liquidation) => liquidation.ts));
+          }
+          state.connected = true;
+        } catch (error) {
+          state.lastError = errorMessage(error);
         }
-        state.connected = true;
-      } catch (error) {
-        state.lastError = errorMessage(error);
+      });
+
+      socket.addEventListener("error", () => {
+        state.lastError = `Error de WebSocket Binance (${endpoint.id}, fetch-upgrade)`;
+      });
+
+      socket.addEventListener("close", (event) => {
+        if (this.sockets.get("binance") === socket) this.sockets.delete("binance");
+        state.connected = false;
+        state.connecting = false;
+        state.lastClosedAt = Date.now();
+        state.closeCode = event.code;
+        state.closeReason = event.reason || null;
+        state.lastError = `Binance cerró ${endpoint.id} (code ${event.code}${event.reason ? `: ${event.reason}` : ""})`;
+        state.reconnects += 1;
+        this.rotateBinanceEndpoint();
+        this.ctx.waitUntil(this.scheduleReconnect());
+      });
+
+      if (endpoint.subscribe) {
+        socket.send(
+          JSON.stringify({
+            method: "SUBSCRIBE",
+            params: ["!forceOrder@arr"],
+            id: 1,
+          }),
+        );
       }
-    });
-
-    socket.addEventListener("error", () => {
-      state.lastError = `Error de WebSocket Binance (${endpoint.id})`;
-    });
-
-    socket.addEventListener("close", (event) => {
-      if (this.sockets.get("binance") === socket) this.sockets.delete("binance");
-      state.connected = false;
+    } catch (error) {
       state.connecting = false;
+      state.connected = false;
       state.lastClosedAt = Date.now();
-      state.closeCode = event.code;
-      state.closeReason = event.reason || null;
-      state.lastError = `Binance cerró ${endpoint.id} (code ${event.code}${event.reason ? `: ${event.reason}` : ""})`;
+      state.lastError = `Handshake Binance ${endpoint.id}: ${errorMessage(error)}`;
       state.reconnects += 1;
-      this.binanceEndpointIndex = (this.binanceEndpointIndex + 1) % BINANCE_ENDPOINTS.length;
-      this.ctx.waitUntil(this.scheduleReconnect());
-    });
+      this.rotateBinanceEndpoint();
+      await this.scheduleReconnect();
+    }
+  }
+
+  private async refreshBinanceRestDiagnostic(state: ExchangeState): Promise<void> {
+    const now = Date.now();
+    if (state.lastRestCheckAt && now - state.lastRestCheckAt < BINANCE_REST_CHECK_MS) return;
+
+    state.lastRestCheckAt = now;
+    state.restError = null;
+
+    try {
+      const response = await fetch(BINANCE_REST_PING, { method: "GET" });
+      state.restReachable = true;
+      state.restStatus = response.status;
+      state.restStatusText = response.statusText || null;
+      if (!response.ok) state.restError = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+    } catch (error) {
+      state.restReachable = false;
+      state.restStatus = null;
+      state.restStatusText = null;
+      state.restError = errorMessage(error);
+    }
+  }
+
+  private rotateBinanceEndpoint(): void {
+    this.binanceEndpointIndex = (this.binanceEndpointIndex + 1) % BINANCE_ENDPOINTS.length;
   }
 
   private ensureBybit(): void {
@@ -258,6 +363,7 @@ export class LiquidationCollector extends DurableObject<Env> {
     state.connecting = true;
     state.connected = false;
     state.endpoint = "linear";
+    state.transport = "constructor";
     const socket = new WebSocket(BYBIT_WS);
     this.sockets.set("bybit", socket);
 
@@ -563,6 +669,15 @@ function parseBybitLiquidations(raw: unknown): Liquidation[] {
   });
 }
 
+async function responseSnippet(response: Response): Promise<string | null> {
+  try {
+    const text = (await response.text()).replace(/\s+/g, " ").trim();
+    return text ? text.slice(0, 240) : null;
+  } catch {
+    return null;
+  }
+}
+
 function decodeJson(raw: unknown): unknown {
   if (typeof raw === "string") return JSON.parse(raw);
   if (raw instanceof ArrayBuffer) return JSON.parse(new TextDecoder().decode(raw));
@@ -594,6 +709,7 @@ function freshExchangeState(): ExchangeState {
     connected: false,
     connecting: false,
     endpoint: null,
+    transport: null,
     lastOpenedAt: null,
     lastClosedAt: null,
     closeCode: null,
@@ -602,6 +718,15 @@ function freshExchangeState(): ExchangeState {
     lastLiquidationAt: null,
     lastError: null,
     reconnects: 0,
+    lastHandshakeAt: null,
+    handshakeStatus: null,
+    handshakeStatusText: null,
+    handshakeBody: null,
+    lastRestCheckAt: null,
+    restReachable: null,
+    restStatus: null,
+    restStatusText: null,
+    restError: null,
   };
 }
 
