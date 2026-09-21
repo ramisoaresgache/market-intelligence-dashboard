@@ -5,6 +5,7 @@ export const dynamic = "force-dynamic";
 
 const MEXC_CONTRACT_DETAIL = "https://contract.mexc.com/api/v1/contract/detail";
 const WHITEBIT_FUTURES = "https://whitebit.com/api/v4/public/futures";
+const BITUNIX_TICKERS = "https://fapi.bitunix.com/api/v1/futures/market/tickers";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -37,6 +38,33 @@ export async function GET(request: Request) {
       return NextResponse.json(
         { exchange: "mexc", symbol, contractSize },
         { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=120" } },
+      );
+    }
+
+    if (exchange === "bitunix") {
+      const params = new URLSearchParams({ symbols: symbol });
+      const response = await fetch(`${BITUNIX_TICKERS}?${params}`, { cache: "no-store" });
+      if (!response.ok) throw new Error(`Bitunix ticker HTTP ${response.status}`);
+
+      const payload = (await response.json()) as {
+        code?: number;
+        data?: Array<Record<string, unknown>>;
+      };
+      const item = payload.data?.find((entry) => entry.symbol === symbol);
+      if (!item) {
+        return NextResponse.json({ error: "Ticker Bitunix no disponible" }, { status: 404 });
+      }
+
+      return NextResponse.json(
+        {
+          exchange: "bitunix",
+          symbol,
+          metrics: {
+            markPrice: optionalNumber(item.markPrice),
+            lastPrice: optionalNumber(item.lastPrice ?? item.last),
+          },
+        },
+        { headers: { "Cache-Control": "public, s-maxage=15, stale-while-revalidate=30" } },
       );
     }
 
