@@ -54,14 +54,15 @@ const SESSIONS: Session[] = [
 ];
 
 export function MarketPulse({ symbol, currentPrice }: { symbol: string; currentPrice?: number }) {
-  const [payload, setPayload] = useState<DailyPayload | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [requestState, setRequestState] = useState<{
+    key: string;
+    payload: DailyPayload | null;
+    error: string | null;
+  }>({ key: "", payload: null, error: null });
   const [clock, setClock] = useState(() => Date.now());
 
   useEffect(() => {
     const controller = new AbortController();
-    setPayload(null);
-    setError(null);
     void fetch(`/api/market-daily?symbol=${encodeURIComponent(symbol)}`, {
       signal: controller.signal,
       cache: "no-store",
@@ -72,11 +73,15 @@ export function MarketPulse({ symbol, currentPrice }: { symbol: string; currentP
         return data;
       })
       .then((data) => {
-        if (!controller.signal.aborted) setPayload(data);
+        if (!controller.signal.aborted) setRequestState({ key: symbol, payload: data, error: null });
       })
       .catch((reason: unknown) => {
         if (!controller.signal.aborted) {
-          setError(reason instanceof Error ? reason.message : "No se pudo cargar el histórico diario");
+          setRequestState({
+            key: symbol,
+            payload: null,
+            error: reason instanceof Error ? reason.message : "No se pudo cargar el histórico diario",
+          });
         }
       });
     return () => controller.abort();
@@ -87,6 +92,9 @@ export function MarketPulse({ symbol, currentPrice }: { symbol: string; currentP
     return () => window.clearInterval(timer);
   }, []);
 
+  const isCurrent = requestState.key === symbol;
+  const payload = isCurrent ? requestState.payload : null;
+  const error = isCurrent ? requestState.error : null;
   const path = useMemo(() => sparklinePath(payload?.points ?? []), [payload]);
   const latest = currentPrice ?? payload?.close;
   const open = payload?.open;
