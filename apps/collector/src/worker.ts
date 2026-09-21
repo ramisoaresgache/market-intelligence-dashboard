@@ -21,6 +21,8 @@ const REGION_PROBES: Array<{ hint: RegionHint; label: string }> = [
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (request.method === "OPTIONS") return withCors(new Response(null, { status: 204 }), env);
+
     const url = new URL(request.url);
 
     if (url.pathname === "/v1/diagnostics/binance-regions") {
