@@ -40,6 +40,8 @@ export interface LiquidationMapPayload {
 }
 
 const MAINTENANCE_MARGIN_RATE = 0.005;
+const CARRY_IN_OI_RATE = 0.0005;
+const CARRY_IN_TURNOVER_RATE = 0.01;
 const LEVERAGE_PROFILE = [
   { leverage: 5, weight: 0.04 },
   { leverage: 10, weight: 0.1 },
@@ -71,12 +73,25 @@ export function estimateLiquidationZones(
 
     const previousOi = sortedOi[index - 1]?.openInterestUsd ?? point.openInterestUsd;
     const positiveDelta = Math.max(0, point.openInterestUsd - previousOi);
-    const turnoverContribution = Math.min(
-      point.openInterestUsd * 0.0025,
-      Math.max(0, candle.turnoverUsd) * 0.025,
-    );
-    const seedContribution = index === 0 ? point.openInterestUsd * 0.003 : 0;
-    const exposureBase = positiveDelta + turnoverContribution + seedContribution;
+
+    // El volumen por sí solo no crea interés abierto. La versión anterior agregaba una fracción
+    // del turnover en cada vela aunque el OI no creciera, lo que acumulaba exposición repetida
+    // durante horas y sobredimensionaba el mapa. Ahora el proxy principal de posiciones nuevas es
+    // el crecimiento neto de OI, limitado por la actividad negociada del intervalo.
+    const activityBackedDelta = Math.min(positiveDelta, Math.max(0, candle.turnoverUsd));
+
+    // El primer punto necesita una pequeña semilla para representar posiciones que ya estaban
+    // abiertas antes de comenzar la ventana histórica. Se mantiene deliberadamente acotada por OI
+    // y turnover para evitar tratar todo el OI existente como posiciones recién abiertas.
+    const carryInContribution =
+      index === 0
+        ? Math.min(
+            point.openInterestUsd * CARRY_IN_OI_RATE,
+            Math.max(0, candle.turnoverUsd) * CARRY_IN_TURNOVER_RATE,
+          )
+        : 0;
+
+    const exposureBase = activityBackedDelta + carryInContribution;
     if (exposureBase <= 0) continue;
 
     const candleReturn = candle.open > 0 ? (candle.close - candle.open) / candle.open : 0;

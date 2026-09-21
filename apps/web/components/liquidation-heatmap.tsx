@@ -47,14 +47,26 @@ interface Geometry {
   maxTs: number;
 }
 
+interface HeatmapGrid {
+  xBins: number;
+  yBins: number;
+  values: Float64Array;
+  lowLog: number;
+  highLog: number;
+}
+
 type ColorStop = {
   p: number;
   rgb: readonly [number, number, number];
 };
 
+const DEFAULT_THRESHOLD = 0.28;
+const Y_BINS = 96;
+
 export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestKey = `${symbol}-${hours}-${source}`;
+  const [threshold, setThreshold] = useState(DEFAULT_THRESHOLD);
   const [requestState, setRequestState] = useState<RequestState>({
     key: "",
     payload: null,
@@ -99,12 +111,12 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !payload) return;
-    const render = () => drawMap(canvas, payload);
+    const render = () => drawMap(canvas, payload, threshold);
     render();
     const observer = new ResizeObserver(render);
     observer.observe(canvas);
     return () => observer.disconnect();
-  }, [payload]);
+  }, [payload, threshold]);
 
   const sourceLabel = useMemo(() => {
     if (!payload?.sourcesUsed.length) return "—";
@@ -133,12 +145,12 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
     const price =
       geometry.maxPrice -
       ((y - geometry.top) / geometry.plotHeight) * (geometry.maxPrice - geometry.minPrice);
-    const tolerance = (geometry.maxPrice - geometry.minPrice) / 45;
+    const priceBin = (geometry.maxPrice - geometry.minPrice) / Y_BINS;
     const active = payload.zones.filter(
       (zone) =>
         ts >= zone.startTs &&
         ts <= zone.endTs + 5 * 60 * 1000 &&
-        Math.abs(zone.price - price) <= tolerance,
+        Math.abs(zone.price - price) <= priceBin * 0.62,
     );
     const longExposureUsd = active
       .filter((zone) => zone.side === "long")
@@ -171,7 +183,21 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
         <span className={styles.badge}>ESTIMADO</span>
         <span>{hours} h históricas</span>
         <span>{sourceLabel}</span>
-        {payload?.warnings.length ? <span title={payload.warnings.join(" · ")}>fuente parcial</span> : null}
+        {payload?.warnings.length ? (
+          <span title={payload.warnings.join(" · ")}>fuente parcial</span>
+        ) : null}
+        <label className={styles.thresholdControl}>
+          <span>Umbral {threshold.toFixed(2)}</span>
+          <input
+            type="range"
+            min="0"
+            max="0.75"
+            step="0.05"
+            value={threshold}
+            onChange={(event) => setThreshold(Number(event.target.value))}
+            aria-label="Umbral mínimo de intensidad"
+          />
+        </label>
       </div>
 
       <div className={styles.stage}>
@@ -194,10 +220,10 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
               top: `${Math.max(8, activeHover.y - 92)}px`,
             }}
           >
-            <b>{formatPrice(activeHover.price)}</b>
+            <b>${formatPrice(activeHover.price)}</b>
             <span>{formatTime(activeHover.ts)}</span>
             <div>
-              <span>Exposición estimada</span>
+              <span>Exposición modelada</span>
               <strong>{formatMoney(activeHover.exposureUsd)}</strong>
             </div>
             <div>
@@ -220,18 +246,23 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
         <span>Mayor concentración estimada</span>
       </div>
       <p className={styles.disclaimer}>
-        Las bandas son una estimación propia basada en velas, volumen e interés abierto público. No
-        representan posiciones individuales ni niveles exactos publicados por los exchanges.
+        Las bandas son una estimación propia basada principalmente en precio, crecimiento de interés
+        abierto y escenarios de apalancamiento. Los montos son del modelo y no son comparables 1:1
+        con CoinGlass ni representan posiciones individuales publicadas por los exchanges.
       </p>
     </div>
   );
 }
 
-function drawMap(canvas: HTMLCanvasElement, payload: LiquidationMapPayload): void {
+function drawMap(
+  canvas: HTMLCanvasElement,
+  payload: LiquidationMapPayload,
+  threshold: number,
+): void {
   const rect = canvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
   const width = Math.max(440, rect.width);
-  const height = Math.max(390, rect.height);
+  const height = Math.max(420, rect.height);
   canvas.width = Math.floor(width * dpr);
   canvas.height = Math.floor(height * dpr);
 
@@ -239,7 +270,7 @@ function drawMap(canvas: HTMLCanvasElement, payload: LiquidationMapPayload): voi
   if (!ctx) return;
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#080b11";
+  ctx.fillStyle = "#070a10";
   ctx.fillRect(0, 0, width, height);
 
   if (!payload.candles.length) {
@@ -251,36 +282,34 @@ function drawMap(canvas: HTMLCanvasElement, payload: LiquidationMapPayload): voi
   }
 
   const geometry = computeGeometry(payload, width, height);
+  drawPlotBackground(ctx, geometry);
   drawGrid(ctx, geometry);
-  drawZones(ctx, payload.zones, geometry);
+  const grid = buildHeatmapGrid(payload.zones, geometry, payload.hours);
+  drawHeatmapGrid(ctx, grid, geometry, threshold);
   drawCandles(ctx, payload.candles, geometry);
   drawCurrentPrice(ctx, payload.candles, geometry);
   drawAxes(ctx, geometry);
 }
 
 function computeGeometry(payload: LiquidationMapPayload, width: number, height: number): Geometry {
-  const left = 64;
-  const right = width - 18;
+  const left = 18;
+  const right = width - 62;
   const top = 18;
-  const bottom = height - 30;
+  const bottom = height - 32;
   const plotWidth = right - left;
   const plotHeight = bottom - top;
   const candles = payload.candles;
   const currentPrice = candles.at(-1)?.close ?? 1;
   const candleLow = Math.min(...candles.map((item) => item.low));
   const candleHigh = Math.max(...candles.map((item) => item.high));
-  const candidateZones = payload.zones
-    .map((zone) => zone.price)
-    .filter((price) => price >= currentPrice * 0.88 && price <= currentPrice * 1.12)
-    .sort((a, b) => a - b);
-  const zoneLow = percentile(candidateZones, 0.02) ?? candleLow;
-  const zoneHigh = percentile(candidateZones, 0.98) ?? candleHigh;
-  const naturalLow = Math.min(candleLow, zoneLow);
-  const naturalHigh = Math.max(candleHigh, zoneHigh);
-  const minimumHalfRange = currentPrice * 0.03;
-  const minPrice = Math.min(naturalLow, currentPrice - minimumHalfRange);
-  const maxPrice = Math.max(naturalHigh, currentPrice + minimumHalfRange);
-  const padding = Math.max((maxPrice - minPrice) * 0.025, currentPrice * 0.002);
+  const targetRatio = payload.hours <= 4 ? 0.03 : payload.hours <= 12 ? 0.04 : 0.052;
+  const hardRatio = payload.hours <= 4 ? 0.045 : payload.hours <= 12 ? 0.055 : 0.067;
+  const targetLow = currentPrice * (1 - targetRatio);
+  const targetHigh = currentPrice * (1 + targetRatio);
+  const hardLow = currentPrice * (1 - hardRatio);
+  const hardHigh = currentPrice * (1 + hardRatio);
+  const minPrice = Math.max(hardLow, Math.min(targetLow, candleLow * 0.996));
+  const maxPrice = Math.min(hardHigh, Math.max(targetHigh, candleHigh * 1.004));
   const minTs = candles[0]?.ts ?? Date.now();
   const maxTs = (candles.at(-1)?.ts ?? minTs) + 5 * 60 * 1000;
 
@@ -291,32 +320,107 @@ function computeGeometry(payload: LiquidationMapPayload, width: number, height: 
     bottom,
     plotWidth,
     plotHeight,
-    minPrice: minPrice - padding,
-    maxPrice: maxPrice + padding,
+    minPrice,
+    maxPrice,
     minTs,
     maxTs,
   };
 }
 
-function drawZones(
-  ctx: CanvasRenderingContext2D,
+function buildHeatmapGrid(
   zones: EstimatedLiquidationZone[],
   geometry: Geometry,
-): void {
-  const visible = zones.filter(
-    (zone) => zone.price >= geometry.minPrice && zone.price <= geometry.maxPrice,
-  );
-  const maxLog = Math.max(1, ...visible.map((zone) => Math.log1p(zone.exposureUsd)));
-  const sorted = [...visible].sort((a, b) => a.exposureUsd - b.exposureUsd);
+  hours: number,
+): HeatmapGrid {
+  const xBins = Math.max(48, Math.round(hours * 12));
+  const yBins = Y_BINS;
+  const values = new Float64Array(xBins * yBins);
+  const duration = Math.max(1, geometry.maxTs - geometry.minTs);
+  const priceRange = Math.max(Number.EPSILON, geometry.maxPrice - geometry.minPrice);
 
-  for (const zone of sorted) {
-    const x1 = timeToX(zone.startTs, geometry);
-    const x2 = timeToX(zone.endTs + 5 * 60 * 1000, geometry);
-    const y = priceToY(zone.price, geometry);
-    const intensity = Math.log1p(zone.exposureUsd) / maxLog;
-    const thickness = 2.5 + intensity * 7;
-    ctx.fillStyle = intensityColor(intensity);
-    ctx.fillRect(x1, y - thickness / 2, Math.max(2, x2 - x1), thickness);
+  for (const zone of zones) {
+    if (zone.price < geometry.minPrice || zone.price > geometry.maxPrice) continue;
+    if (zone.endTs < geometry.minTs || zone.startTs > geometry.maxTs) continue;
+
+    const xStart = clampInt(
+      Math.floor(((zone.startTs - geometry.minTs) / duration) * xBins),
+      0,
+      xBins - 1,
+    );
+    const xEnd = clampInt(
+      Math.floor((((zone.endTs + 5 * 60 * 1000) - geometry.minTs) / duration) * xBins),
+      xStart,
+      xBins - 1,
+    );
+    const yCenter = clampInt(
+      Math.floor(((geometry.maxPrice - zone.price) / priceRange) * yBins),
+      0,
+      yBins - 1,
+    );
+
+    for (let xIndex = xStart; xIndex <= xEnd; xIndex += 1) {
+      addCell(values, xBins, yBins, xIndex, yCenter, zone.exposureUsd);
+      addCell(values, xBins, yBins, xIndex, yCenter - 1, zone.exposureUsd * 0.34);
+      addCell(values, xBins, yBins, xIndex, yCenter + 1, zone.exposureUsd * 0.34);
+    }
+  }
+
+  const logs = Array.from(values)
+    .filter((value) => value > 0)
+    .map((value) => Math.log1p(value))
+    .sort((a, b) => a - b);
+  const lowLog = percentileSorted(logs, 0.2) ?? 0;
+  const highLog = percentileSorted(logs, 0.97) ?? Math.max(1, lowLog + 1);
+
+  return { xBins, yBins, values, lowLog, highLog };
+}
+
+function addCell(
+  values: Float64Array,
+  xBins: number,
+  yBins: number,
+  xIndex: number,
+  yIndex: number,
+  amount: number,
+): void {
+  if (xIndex < 0 || xIndex >= xBins || yIndex < 0 || yIndex >= yBins || amount <= 0) return;
+  const index = yIndex * xBins + xIndex;
+  values[index] = (values[index] ?? 0) + amount;
+}
+
+function drawPlotBackground(ctx: CanvasRenderingContext2D, geometry: Geometry): void {
+  const gradient = ctx.createLinearGradient(0, geometry.top, 0, geometry.bottom);
+  gradient.addColorStop(0, "#3c0750");
+  gradient.addColorStop(0.5, "#360648");
+  gradient.addColorStop(1, "#300541");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(geometry.left, geometry.top, geometry.plotWidth, geometry.plotHeight);
+}
+
+function drawHeatmapGrid(
+  ctx: CanvasRenderingContext2D,
+  grid: HeatmapGrid,
+  geometry: Geometry,
+  threshold: number,
+): void {
+  const cellWidth = geometry.plotWidth / grid.xBins;
+  const cellHeight = geometry.plotHeight / grid.yBins;
+  const spread = Math.max(0.0001, grid.highLog - grid.lowLog);
+
+  for (let yIndex = 0; yIndex < grid.yBins; yIndex += 1) {
+    for (let xIndex = 0; xIndex < grid.xBins; xIndex += 1) {
+      const value = grid.values[yIndex * grid.xBins + xIndex] ?? 0;
+      if (value <= 0) continue;
+      const intensity = clamp((Math.log1p(value) - grid.lowLog) / spread, 0, 1);
+      if (intensity < threshold) continue;
+      ctx.fillStyle = intensityColor(intensity);
+      ctx.fillRect(
+        geometry.left + xIndex * cellWidth,
+        geometry.top + yIndex * cellHeight,
+        Math.ceil(cellWidth + 0.4),
+        Math.ceil(cellHeight + 0.4),
+      );
+    }
   }
 }
 
@@ -325,15 +429,20 @@ function drawCandles(
   candles: HistoricalCandle[],
   geometry: Geometry,
 ): void {
-  const bodyWidth = clamp((geometry.plotWidth / Math.max(candles.length, 1)) * 0.62, 1.5, 7);
-  for (const candle of candles) {
+  const visible = candles.filter(
+    (candle) => candle.ts >= geometry.minTs && candle.ts <= geometry.maxTs,
+  );
+  const bodyWidth = clamp((geometry.plotWidth / Math.max(visible.length, 1)) * 0.7, 1.4, 5.5);
+
+  for (const candle of visible) {
     const x = timeToX(candle.ts + 2.5 * 60 * 1000, geometry);
     const openY = priceToY(candle.open, geometry);
     const closeY = priceToY(candle.close, geometry);
     const highY = priceToY(candle.high, geometry);
     const lowY = priceToY(candle.low, geometry);
+    if (lowY < geometry.top || highY > geometry.bottom) continue;
     const rising = candle.close >= candle.open;
-    const color = rising ? "rgba(68, 226, 158, .96)" : "rgba(255, 86, 110, .96)";
+    const color = rising ? "#18d59b" : "#ff4e72";
 
     ctx.strokeStyle = color;
     ctx.lineWidth = 1;
@@ -347,7 +456,7 @@ function drawCandles(
       x - bodyWidth / 2,
       Math.min(openY, closeY),
       bodyWidth,
-      Math.max(1.5, Math.abs(closeY - openY)),
+      Math.max(1.3, Math.abs(closeY - openY)),
     );
   }
 }
@@ -358,26 +467,29 @@ function drawCurrentPrice(
   geometry: Geometry,
 ): void {
   const price = candles.at(-1)?.close;
-  if (price == null) return;
+  if (price == null || price < geometry.minPrice || price > geometry.maxPrice) return;
   const y = priceToY(price, geometry);
-  ctx.strokeStyle = "rgba(235, 241, 248, .58)";
+  ctx.strokeStyle = "rgba(230, 238, 247, .48)";
   ctx.setLineDash([4, 4]);
   ctx.beginPath();
   ctx.moveTo(geometry.left, y);
   ctx.lineTo(geometry.right, y);
   ctx.stroke();
   ctx.setLineDash([]);
-  ctx.fillStyle = "#edf2f7";
-  ctx.font = "bold 10px ui-monospace, monospace";
-  ctx.textAlign = "left";
-  ctx.fillText(`PRECIO ${formatPrice(price)}`, geometry.left + 6, Math.max(11, y - 6));
+
+  ctx.fillStyle = "rgba(10, 16, 24, .96)";
+  ctx.fillRect(geometry.right + 4, y - 8, 56, 16);
+  ctx.fillStyle = "#e9f0f7";
+  ctx.font = "bold 9px ui-monospace, monospace";
+  ctx.textAlign = "center";
+  ctx.fillText(formatPrice(price), geometry.right + 32, y + 3);
 }
 
 function drawGrid(ctx: CanvasRenderingContext2D, geometry: Geometry): void {
-  ctx.strokeStyle = "rgba(255,255,255,.055)";
+  ctx.strokeStyle = "rgba(255,255,255,.075)";
   ctx.lineWidth = 1;
-  for (let step = 0; step <= 5; step += 1) {
-    const y = geometry.top + (step / 5) * geometry.plotHeight;
+  for (let step = 0; step <= 6; step += 1) {
+    const y = geometry.top + (step / 6) * geometry.plotHeight;
     ctx.beginPath();
     ctx.moveTo(geometry.left, y);
     ctx.lineTo(geometry.right, y);
@@ -386,26 +498,24 @@ function drawGrid(ctx: CanvasRenderingContext2D, geometry: Geometry): void {
 }
 
 function drawAxes(ctx: CanvasRenderingContext2D, geometry: Geometry): void {
-  ctx.fillStyle = "#758091";
+  ctx.fillStyle = "#9aa6b5";
   ctx.font = "10px ui-monospace, monospace";
-  ctx.textAlign = "right";
-  for (let step = 0; step <= 5; step += 1) {
-    const ratio = step / 5;
+  ctx.textAlign = "left";
+  for (let step = 0; step <= 6; step += 1) {
+    const ratio = step / 6;
     const y = geometry.top + ratio * geometry.plotHeight;
     const price = geometry.maxPrice - ratio * (geometry.maxPrice - geometry.minPrice);
-    ctx.fillText(formatPrice(price), geometry.left - 7, y + 3);
+    ctx.fillText(formatPrice(price), geometry.right + 7, y + 3);
   }
 
-  ctx.textAlign = "left";
-  ctx.fillText(formatAxisTime(geometry.minTs), geometry.left, geometry.bottom + 18);
-  ctx.textAlign = "center";
-  ctx.fillText(
-    formatAxisTime((geometry.minTs + geometry.maxTs) / 2),
-    geometry.left + geometry.plotWidth / 2,
-    geometry.bottom + 18,
-  );
-  ctx.textAlign = "right";
-  ctx.fillText(formatAxisTime(geometry.maxTs), geometry.right, geometry.bottom + 18);
+  const timeSteps = 6;
+  for (let step = 0; step <= timeSteps; step += 1) {
+    const ratio = step / timeSteps;
+    const x = geometry.left + ratio * geometry.plotWidth;
+    const timestamp = geometry.minTs + ratio * (geometry.maxTs - geometry.minTs);
+    ctx.textAlign = step === 0 ? "left" : step === timeSteps ? "right" : "center";
+    ctx.fillText(formatAxisTime(timestamp), x, geometry.bottom + 18);
+  }
 }
 
 function timeToX(ts: number, geometry: Geometry): number {
@@ -427,11 +537,11 @@ function priceToY(price: number, geometry: Geometry): number {
 function intensityColor(intensity: number): string {
   const clamped = clamp(intensity, 0, 1);
   const stops: ColorStop[] = [
-    { p: 0, rgb: [59, 15, 92] },
-    { p: 0.28, rgb: [47, 72, 156] },
-    { p: 0.52, rgb: [26, 158, 176] },
-    { p: 0.75, rgb: [70, 196, 104] },
-    { p: 1, rgb: [238, 226, 32] },
+    { p: 0, rgb: [52, 17, 104] },
+    { p: 0.26, rgb: [39, 74, 149] },
+    { p: 0.5, rgb: [28, 153, 166] },
+    { p: 0.74, rgb: [67, 194, 99] },
+    { p: 1, rgb: [241, 229, 27] },
   ];
   let left = stops[0] as ColorStop;
   let right = stops[stops.length - 1] as ColorStop;
@@ -453,17 +563,21 @@ function intensityColor(intensity: number): string {
   const rgb = left.rgb.map((value, index) =>
     Math.round(value + ((right.rgb[index] ?? value) - value) * local),
   );
-  return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${0.22 + clamped * 0.72})`;
+  return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${0.42 + clamped * 0.55})`;
 }
 
-function percentile(values: number[], ratio: number): number | null {
+function percentileSorted(values: number[], ratio: number): number | null {
   if (!values.length) return null;
   const index = Math.floor((values.length - 1) * ratio);
-  return values[clamp(index, 0, values.length - 1)] ?? null;
+  return values[clampInt(index, 0, values.length - 1)] ?? null;
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+function clampInt(value: number, minimum: number, maximum: number): number {
+  return Math.trunc(clamp(value, minimum, maximum));
 }
 
 function formatMoney(value: number): string {
