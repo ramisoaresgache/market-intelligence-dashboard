@@ -1,6 +1,15 @@
 import { DurableObject } from "cloudflare:workers";
 
-const BINANCE_WS = "wss://fstream.binance.com/ws/!forceOrder@arr";
+const BINANCE_ENDPOINTS = [
+  {
+    id: "market-stream",
+    url: "wss://fstream.binance.com/market/stream?streams=!forceOrder@arr",
+  },
+  {
+    id: "market-raw",
+    url: "wss://fstream.binance.com/market/ws/!forceOrder@arr",
+  },
+] as const;
 const BYBIT_WS = "wss://stream.bybit.com/v5/public/linear";
 const BUCKET_MS = 60_000;
 const ALARM_MS = 60_000;
@@ -49,6 +58,11 @@ type BucketRow = {
 type ExchangeState = {
   connected: boolean;
   connecting: boolean;
+  endpoint: string | null;
+  lastOpenedAt: number | null;
+  lastClosedAt: number | null;
+  closeCode: number | null;
+  closeReason: string | null;
   lastMessageAt: number | null;
   lastLiquidationAt: number | null;
   lastError: string | null;
@@ -89,6 +103,7 @@ export class LiquidationCollector extends DurableObject<Env> {
   private readonly sockets = new Map<Exchange, WebSocket>();
   private readonly exchangeState = new Map<Exchange, ExchangeState>();
   private bybitHeartbeat: ReturnType<typeof setInterval> | null = null;
+  private binanceEndpointIndex = 0;
   private flushing = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -188,15 +203,18 @@ export class LiquidationCollector extends DurableObject<Env> {
     const current = this.sockets.get("binance");
     if (current && (current.readyState === WebSocket.OPEN || current.readyState === WebSocket.CONNECTING)) return;
 
+    const endpoint = BINANCE_ENDPOINTS[this.binanceEndpointIndex];
     const state = this.exchangeState.get("binance")!;
     state.connecting = true;
     state.connected = false;
-    const socket = new WebSocket(BINANCE_WS);
+    state.endpoint = endpoint.id;
+    const socket = new WebSocket(endpoint.url);
     this.sockets.set("binance", socket);
 
     socket.addEventListener("open", () => {
       state.connected = true;
       state.connecting = false;
+      state.lastOpenedAt = Date.now();
       state.lastError = null;
     });
 
@@ -215,14 +233,19 @@ export class LiquidationCollector extends DurableObject<Env> {
     });
 
     socket.addEventListener("error", () => {
-      state.lastError = "Error de WebSocket Binance";
+      state.lastError = `Error de WebSocket Binance (${endpoint.id})`;
     });
 
-    socket.addEventListener("close", () => {
+    socket.addEventListener("close", (event) => {
       if (this.sockets.get("binance") === socket) this.sockets.delete("binance");
       state.connected = false;
       state.connecting = false;
+      state.lastClosedAt = Date.now();
+      state.closeCode = event.code;
+      state.closeReason = event.reason || null;
+      state.lastError = `Binance cerró ${endpoint.id} (code ${event.code}${event.reason ? `: ${event.reason}` : ""})`;
       state.reconnects += 1;
+      this.binanceEndpointIndex = (this.binanceEndpointIndex + 1) % BINANCE_ENDPOINTS.length;
       this.ctx.waitUntil(this.scheduleReconnect());
     });
   }
@@ -234,6 +257,7 @@ export class LiquidationCollector extends DurableObject<Env> {
     const state = this.exchangeState.get("bybit")!;
     state.connecting = true;
     state.connected = false;
+    state.endpoint = "linear";
     const socket = new WebSocket(BYBIT_WS);
     this.sockets.set("bybit", socket);
 
@@ -246,6 +270,7 @@ export class LiquidationCollector extends DurableObject<Env> {
       );
       state.connected = true;
       state.connecting = false;
+      state.lastOpenedAt = Date.now();
       state.lastError = null;
       this.startBybitHeartbeat(socket);
     });
@@ -268,11 +293,17 @@ export class LiquidationCollector extends DurableObject<Env> {
       state.lastError = "Error de WebSocket Bybit";
     });
 
-    socket.addEventListener("close", () => {
+    socket.addEventListener("close", (event) => {
       if (this.sockets.get("bybit") === socket) this.sockets.delete("bybit");
       this.stopBybitHeartbeat();
       state.connected = false;
       state.connecting = false;
+      state.lastClosedAt = Date.now();
+      state.closeCode = event.code;
+      state.closeReason = event.reason || null;
+      if (event.code !== 1000) {
+        state.lastError = `Bybit cerró WebSocket (code ${event.code}${event.reason ? `: ${event.reason}` : ""})`;
+      }
       state.reconnects += 1;
       this.ctx.waitUntil(this.scheduleReconnect());
     });
@@ -562,6 +593,11 @@ function freshExchangeState(): ExchangeState {
   return {
     connected: false,
     connecting: false,
+    endpoint: null,
+    lastOpenedAt: null,
+    lastClosedAt: null,
+    closeCode: null,
+    closeReason: null,
     lastMessageAt: null,
     lastLiquidationAt: null,
     lastError: null,
