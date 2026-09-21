@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 
-const BINANCE_WS = "wss://fstream.binance.com/market/ws/!forceOrder@arr";
+const BINANCE_WS = "wss://fstream.binance.com/ws/!forceOrder@arr";
 const BYBIT_WS = "wss://stream.bybit.com/v5/public/linear";
 const BUCKET_MS = 60_000;
 const ALARM_MS = 60_000;
@@ -50,6 +50,7 @@ type ExchangeState = {
   connected: boolean;
   connecting: boolean;
   lastMessageAt: number | null;
+  lastLiquidationAt: number | null;
   lastError: string | null;
   reconnects: number;
 };
@@ -201,8 +202,12 @@ export class LiquidationCollector extends DurableObject<Env> {
 
     socket.addEventListener("message", (event) => {
       try {
-        for (const liquidation of parseBinanceLiquidations(event.data)) this.record(liquidation);
+        const liquidations = parseBinanceLiquidations(event.data);
+        for (const liquidation of liquidations) this.record(liquidation);
         state.lastMessageAt = Date.now();
+        if (liquidations.length > 0) {
+          state.lastLiquidationAt = Math.max(...liquidations.map((liquidation) => liquidation.ts));
+        }
         state.connected = true;
       } catch (error) {
         state.lastError = errorMessage(error);
@@ -247,8 +252,12 @@ export class LiquidationCollector extends DurableObject<Env> {
 
     socket.addEventListener("message", (event) => {
       try {
-        for (const liquidation of parseBybitLiquidations(event.data)) this.record(liquidation);
+        const liquidations = parseBybitLiquidations(event.data);
+        for (const liquidation of liquidations) this.record(liquidation);
         state.lastMessageAt = Date.now();
+        if (liquidations.length > 0) {
+          state.lastLiquidationAt = Math.max(...liquidations.map((liquidation) => liquidation.ts));
+        }
         state.connected = true;
       } catch (error) {
         state.lastError = errorMessage(error);
@@ -554,6 +563,7 @@ function freshExchangeState(): ExchangeState {
     connected: false,
     connecting: false,
     lastMessageAt: null,
+    lastLiquidationAt: null,
     lastError: null,
     reconnects: 0,
   };
