@@ -3,7 +3,7 @@ import type { MarketMetrics, NormalizedOrderBook, OrderLevel } from "../types";
 import { BrowserExchangeAdapter, optionalNumber, type MarketEventSink } from "./base";
 
 const WS_URL = "wss://fapi.bitunix.com/public/";
-const TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers";
+const TICKER_PROXY_URL = "/api/exchange-bootstrap";
 const HEARTBEAT_MS = 20_000;
 
 type BitunixPayload = {
@@ -11,6 +11,15 @@ type BitunixPayload = {
   symbol?: string;
   ts?: number;
   data?: Record<string, unknown>;
+};
+
+type BitunixBootstrapPayload = {
+  exchange?: string;
+  symbol?: string;
+  metrics?: {
+    markPrice?: number;
+    lastPrice?: number;
+  };
 };
 
 export class BitunixAdapter extends BrowserExchangeAdapter {
@@ -41,20 +50,21 @@ export class BitunixAdapter extends BrowserExchangeAdapter {
 
   private async loadInitialTicker(): Promise<void> {
     try {
-      const params = new URLSearchParams({ symbols: this.symbol });
-      const response = await fetch(`${TICKERS_URL}?${params}`, { cache: "no-store" });
+      const params = new URLSearchParams({ exchange: "bitunix", symbol: this.symbol });
+      const response = await fetch(`${TICKER_PROXY_URL}?${params}`, { cache: "no-store" });
       if (!response.ok) return;
-      const payload = (await response.json()) as { code?: number; data?: Array<Record<string, unknown>> };
-      const item = payload.data?.find((value) => value.symbol === this.symbol);
-      if (!item) return;
+      const payload = (await response.json()) as BitunixBootstrapPayload;
+      const source = payload.metrics;
+      if (!source) return;
+
       const metrics: MarketMetrics = { exchange: "bitunix", symbol: this.symbol, ts: Date.now() };
-      const mark = optionalNumber(item.markPrice);
-      const last = optionalNumber(item.lastPrice ?? item.last);
+      const mark = optionalNumber(source.markPrice);
+      const last = optionalNumber(source.lastPrice);
       if (mark !== undefined) metrics.markPrice = mark;
       if (last !== undefined) metrics.lastPrice = last;
       this.emit({ type: "metrics", data: metrics });
     } catch {
-      // El WebSocket sigue siendo suficiente para profundidad aunque falle el ticker REST.
+      // El WebSocket sigue siendo suficiente para profundidad aunque falle el bootstrap REST.
     }
   }
 
