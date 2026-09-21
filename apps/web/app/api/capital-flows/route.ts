@@ -3,11 +3,8 @@ import { NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 
 const COINMETRICS_BASE = "https://community-api.coinmetrics.io/v4";
-const ETF_SOURCES = [
-  { asset: "BTC", url: "https://farside.co.uk/btc/" },
-  { asset: "ETH", url: "https://farside.co.uk/eth/" },
-  { asset: "SOL", url: "https://farside.co.uk/sol/" },
-] as const;
+const SOSOVALUE_BASE = "https://openapi.sosovalue.com/openapi/v1";
+const ETF_ASSETS = ["BTC", "ETH", "SOL"] as const;
 
 type CoinMetricsRow = {
   time?: string;
@@ -20,18 +17,34 @@ type CoinMetricsRow = {
   PriceUSD?: string;
 };
 
-type EtfFlowRow = {
-  date: string;
-  ts: number;
-  flowUsd: number;
+type SoSoEtfRow = {
+  date?: string;
+  total_net_inflow?: string | number;
+  total_value_traded?: string | number;
+  total_net_assets?: string | number;
+  cum_net_inflow?: string | number;
 };
 
 export async function GET() {
   const warnings: string[] = [];
+  const sosoApiKey = process.env.SOSOVALUE_API_KEY?.trim();
+
+  const exchangePromise = loadBitcoinExchangeFlows();
+  const etfPromises = sosoApiKey
+    ? ETF_ASSETS.map((asset) => loadSoSoValueFlows(asset, sosoApiKey))
+    : ETF_ASSETS.map((asset) =>
+        Promise.resolve({
+          asset,
+          source: "SoSoValue Demo API",
+          available: false as const,
+          requiresConfig: true,
+          error: "Falta configurar SOSOVALUE_API_KEY (plan Demo gratuito).",
+        }),
+      );
 
   const [exchangeResult, ...etfResults] = await Promise.allSettled([
-    loadBitcoinExchangeFlows(),
-    ...ETF_SOURCES.map((source) => loadFarsideFlows(source.asset, source.url)),
+    exchangePromise,
+    ...etfPromises,
   ]);
 
   const bitcoinExchange =
@@ -39,15 +52,16 @@ export async function GET() {
       ? exchangeResult.value
       : (warnings.push(`Coin Metrics: ${errorMessage(exchangeResult.reason)}`), null);
 
-  const etfs = ETF_SOURCES.map((source, index) => {
+  const etfs = ETF_ASSETS.map((asset, index) => {
     const result = etfResults[index];
     if (result.status === "fulfilled") return result.value;
-    warnings.push(`${source.asset} ETF: ${errorMessage(result.reason)}`);
+    const message = errorMessage(result.reason);
+    warnings.push(`${asset} ETF: ${message}`);
     return {
-      asset: source.asset,
-      source: "Farside Investors",
-      available: false,
-      error: errorMessage(result.reason),
+      asset,
+      source: "SoSoValue Demo API",
+      available: false as const,
+      error: message,
     };
   });
 
@@ -57,11 +71,12 @@ export async function GET() {
       bitcoinExchange,
       etfs,
       warnings,
+      etfProviderConfigured: Boolean(sosoApiKey),
       methodology: {
         exchangeFlows:
           "Coin Metrics FlowInEx/FlowOutEx: movimientos diarios de BTC hacia/desde direcciones identificadas como exchanges, excluyendo transferencias entre exchanges.",
         etfFlows:
-          "Flujo neto diario publicado por Farside Investors para ETF spot de BTC, ETH y SOL; valores expresados en USD.",
+          "SoSoValue ETF Summary History: flujo neto diario agregado de ETF spot de EE.UU. para BTC, ETH y SOL. El plan Demo es gratuito y requiere una API key server-side.",
       },
     },
     {
@@ -125,80 +140,60 @@ async function loadBitcoinExchangeFlows() {
   };
 }
 
-async function loadFarsideFlows(asset: string, url: string) {
-  const response = await fetch(url, {
+async function loadSoSoValueFlows(asset: (typeof ETF_ASSETS)[number], apiKey: string) {
+  const params = new URLSearchParams({
+    symbol: asset,
+    country_code: "US",
+    limit: "14",
+  });
+  const response = await fetch(`${SOSOVALUE_BASE}/etfs/summary-history?${params}`, {
     headers: {
-      Accept: "text/html,application/xhtml+xml",
-      "User-Agent": "MarketIntelligenceDashboard/1.0 (+public market research dashboard)",
+      Accept: "application/json",
+      "x-soso-api-key": apiKey,
     },
     next: { revalidate: 900 },
   });
   if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`.trim());
 
-  const html = await response.text();
-  const rows = parseFarsideRows(html);
-  if (!rows.length) throw new Error("No se pudo leer la tabla de Farside");
+  const raw = (await response.json()) as unknown;
+  const rows = extractSoSoRows(raw)
+    .filter((row) => row.date && Number.isFinite(Number(row.total_net_inflow)))
+    .sort((a, b) => Date.parse(a.date ?? "") - Date.parse(b.date ?? ""));
+  if (!rows.length) throw new Error("SoSoValue no devolvió histórico ETF");
 
-  const recent = [...rows].sort((a, b) => b.ts - a.ts).slice(0, 7);
-  const latest = recent[0];
+  const recent7 = rows.slice(-7);
+  const latest = recent7.at(-1)!;
   return {
     asset,
-    source: "Farside Investors",
-    available: true,
+    source: "SoSoValue Demo API",
+    available: true as const,
     date: latest.date,
-    dailyFlowUsd: latest.flowUsd,
-    fiveDayFlowUsd: recent.slice(0, 5).reduce((sum, row) => sum + row.flowUsd, 0),
-    sevenDayFlowUsd: recent.reduce((sum, row) => sum + row.flowUsd, 0),
-    recent,
+    dailyFlowUsd: numberValue(latest.total_net_inflow),
+    fiveDayFlowUsd: recent7.slice(-5).reduce((sum, row) => sum + numberValue(row.total_net_inflow), 0),
+    sevenDayFlowUsd: recent7.reduce((sum, row) => sum + numberValue(row.total_net_inflow), 0),
+    netAssetsUsd: nullableNumber(latest.total_net_assets),
+    cumulativeFlowUsd: nullableNumber(latest.cum_net_inflow),
+    valueTradedUsd: nullableNumber(latest.total_value_traded),
   };
 }
 
-function parseFarsideRows(html: string): EtfFlowRow[] {
-  const rows: EtfFlowRow[] = [];
-  const rowRegex = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
-  let rowMatch: RegExpExecArray | null;
+function extractSoSoRows(value: unknown): SoSoEtfRow[] {
+  if (Array.isArray(value)) return value.filter(isRecord) as SoSoEtfRow[];
+  if (!isRecord(value)) return [];
 
-  while ((rowMatch = rowRegex.exec(html)) !== null) {
-    const cells: string[] = [];
-    const cellRegex = /<(?:td|th)\b[^>]*>([\s\S]*?)<\/(?:td|th)>/gi;
-    let cellMatch: RegExpExecArray | null;
-    while ((cellMatch = cellRegex.exec(rowMatch[1])) !== null) cells.push(cleanHtml(cellMatch[1]));
-    if (cells.length < 2) continue;
-
-    const date = cells[0].replace(/\s+/g, " ").trim();
-    if (!/^\d{1,2}\s+[A-Za-z]{3}\s+\d{4}$/.test(date)) continue;
-
-    const value = parseFarsideMillions(cells.at(-1) ?? "");
-    if (value == null) continue;
-    const ts = Date.parse(`${date} 00:00:00 UTC`);
-    if (!Number.isFinite(ts)) continue;
-    rows.push({ date, ts, flowUsd: value * 1_000_000 });
+  const data = value.data;
+  if (Array.isArray(data)) return data.filter(isRecord) as SoSoEtfRow[];
+  if (isRecord(data)) {
+    for (const key of ["list", "items", "records"]) {
+      const candidate = data[key];
+      if (Array.isArray(candidate)) return candidate.filter(isRecord) as SoSoEtfRow[];
+    }
   }
-
-  return rows;
+  return [];
 }
 
-function cleanHtml(value: string): string {
-  return value
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;|&#160;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&#8211;|&ndash;/gi, "-")
-    .replace(/&#8212;|&mdash;/gi, "-")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function parseFarsideMillions(value: string): number | null {
-  const raw = value.trim();
-  if (!raw || raw === "-" || raw === "—") return null;
-  const negative = /^\(.*\)$/.test(raw) || raw.startsWith("-");
-  const normalized = raw.replace(/[(),$+\s]/g, "").replace(/[^0-9.-]/g, "");
-  const parsed = Number(normalized);
-  if (!Number.isFinite(parsed)) return null;
-  return negative ? -Math.abs(parsed) : parsed;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function numberValue(value: unknown): number {
