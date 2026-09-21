@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 type ExchangeHistoryPoint = {
   date: string;
@@ -8,18 +8,6 @@ type ExchangeHistoryPoint = {
   inflowBtc: number | null;
   outflowBtc: number | null;
   priceUsd: number | null;
-};
-
-type ExchangeBreakdown = {
-  id: string;
-  name: string;
-  balanceBtc: number;
-  change1dBtc: number | null;
-  change7dBtc: number | null;
-  change30dBtc: number | null;
-  inflowBtc: number | null;
-  outflowBtc: number | null;
-  history: ExchangeHistoryPoint[];
 };
 
 type BitcoinExchangeFlow = {
@@ -36,9 +24,6 @@ type BitcoinExchangeFlow = {
   sevenDayNetflowUsd?: number;
   sevenDayNetflowBtc?: number;
   history?: ExchangeHistoryPoint[];
-  exchanges?: ExchangeBreakdown[];
-  exchangeDetailAvailable?: boolean;
-  exchangeDetailError?: string | null;
 };
 
 type EtfFlow = {
@@ -64,10 +49,13 @@ type CapitalFlowsPayload = {
   warnings?: string[];
 };
 
+const CHART_WIDTH = 1100;
+const CHART_HEIGHT = 340;
+const MARGIN = { top: 24, right: 94, bottom: 54, left: 88 };
+
 export function CapitalFlows() {
   const [payload, setPayload] = useState<CapitalFlowsPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedExchange, setSelectedExchange] = useState("all");
 
   useEffect(() => {
     let active = true;
@@ -95,18 +83,7 @@ export function CapitalFlows() {
 
   const exchange = payload?.bitcoinExchange;
   const etfs = payload?.etfs ?? [];
-  const exchangeRows = exchange?.exchanges ?? [];
-
-  const selectedHistory = useMemo(() => {
-    if (!exchange) return [];
-    if (selectedExchange === "all") return exchange.history ?? [];
-    return exchangeRows.find((item) => item.id === selectedExchange)?.history ?? [];
-  }, [exchange, exchangeRows, selectedExchange]);
-
-  const selectedName =
-    selectedExchange === "all"
-      ? "Todos los exchanges"
-      : exchangeRows.find((item) => item.id === selectedExchange)?.name ?? selectedExchange;
+  const exchangeHistory = exchange?.history ?? [];
 
   return (
     <section className="capital-flows-panel panel">
@@ -115,7 +92,7 @@ export function CapitalFlows() {
           <span className="kicker">FLUJOS DE CAPITAL · FUENTES PÚBLICAS</span>
           <h3>BTC en exchanges y ETF spot cripto</h3>
           <p className="muted-note">
-            Flujos on-chain de BTC hacia/desde wallets identificadas de exchanges y datos de ETF spot.
+            Flujos on-chain agregados de BTC hacia/desde exchanges identificados y flujos reales de ETF spot.
           </p>
         </div>
       </div>
@@ -126,7 +103,7 @@ export function CapitalFlows() {
         <article className="insight-card capital-flow-card">
           <div className="insight-card-head">
             <strong>BTC ↔ Exchanges</strong>
-            <span>Coin Metrics · diario</span>
+            <span>Coin Metrics · todos</span>
           </div>
           {exchange?.available ? (
             <>
@@ -164,7 +141,7 @@ export function CapitalFlows() {
             <article className="insight-card capital-flow-card" key={asset}>
               <div className="insight-card-head">
                 <strong>ETF spot {asset}</strong>
-                <span>{item?.source ?? "SoSoValue"} · USD</span>
+                <span>{item?.source ?? "SoSoValue"} · datos reales</span>
               </div>
               {item?.available ? (
                 <>
@@ -200,71 +177,30 @@ export function CapitalFlows() {
               <span className="kicker">BTC EN EXCHANGES · HISTÓRICO ON-CHAIN</span>
               <h3>Saldo y movimientos de Bitcoin</h3>
               <p className="muted-note">
-                Similar a la vista de reservas de exchanges: saldo identificado, variaciones y entradas/salidas diarias.
+                Vista agregada de todos los exchanges identificados por Coin Metrics. Eje izquierdo: BTC. Eje derecho: precio BTC en USD.
               </p>
             </div>
-            <label className="exchange-filter">
-              <span>Exchange</span>
-              <select value={selectedExchange} onChange={(event) => setSelectedExchange(event.target.value)}>
-                <option value="all">Todos</option>
-                {exchangeRows.map((item) => (
-                  <option value={item.id} key={item.id}>{item.name}</option>
-                ))}
-              </select>
-            </label>
+            <span className="aggregate-badge">TODOS LOS EXCHANGES</span>
           </div>
 
           <div className="exchange-chart-card">
             <div className="exchange-chart-title">
-              <strong>Saldo de BTC · {selectedName}</strong>
-              <span>BTC retenidos vs. precio BTC</span>
+              <strong>Saldo de BTC · todos los exchanges</strong>
+              <span>Saldo agregado vs. precio BTC</span>
             </div>
-            <BalanceChart points={selectedHistory} />
+            <BalanceChart points={exchangeHistory} />
           </div>
-
-          {exchangeRows.length ? (
-            <div className="exchange-table-wrap">
-              <div className="exchange-table-head">
-                <strong>Saldo de Bitcoin por exchange</strong>
-                <span>Cambios de saldo on-chain</span>
-              </div>
-              <div className="exchange-balance-table">
-                <div className="exchange-balance-row exchange-balance-header">
-                  <span>#</span>
-                  <span>Exchange</span>
-                  <span>Saldo BTC</span>
-                  <span>24h</span>
-                  <span>7d</span>
-                  <span>30d</span>
-                </div>
-                {exchangeRows.map((item, index) => (
-                  <div className="exchange-balance-row" key={item.id}>
-                    <span>{index + 1}</span>
-                    <strong>{item.name}</strong>
-                    <b>{formatBtcNumber(item.balanceBtc)}</b>
-                    <Delta value={item.change1dBtc} />
-                    <Delta value={item.change7dBtc} />
-                    <Delta value={item.change30dBtc} />
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="exchange-detail-note">
-              El histórico agregado está disponible, pero Coin Metrics Community no devolvió el desglose por exchange en esta consulta.
-            </div>
-          )}
 
           <div className="exchange-chart-card">
             <div className="exchange-chart-title">
-              <strong>Entradas / salidas de BTC · {selectedName}</strong>
-              <span>Verde = entra al exchange · rojo = sale del exchange</span>
+              <strong>Entradas / salidas de BTC · todos los exchanges</strong>
+              <span>Barras = flujo BTC · línea amarilla = precio BTC</span>
             </div>
-            <FlowChart points={selectedHistory} />
+            <FlowChart points={exchangeHistory} />
           </div>
 
           <p className="exchange-method-note">
-            Coin Metrics identifica wallets hot y cold de exchanges mediante heurísticas y fuentes propias. Los saldos son una estimación y pueden subestimar el total real si existen direcciones todavía no identificadas.
+            Coin Metrics identifica wallets hot y cold de exchanges mediante heurísticas y fuentes propias. Los saldos son una estimación agregada y pueden subestimar el total real si existen direcciones todavía no identificadas.
           </p>
         </div>
       ) : null}
@@ -278,87 +214,252 @@ export function CapitalFlows() {
 
 function BalanceChart({ points }: { points: ExchangeHistoryPoint[] }) {
   const usable = points.filter((point) => point.reserveBtc != null);
-  if (usable.length < 2) return <Empty text="Todavía no hay histórico suficiente para graficar este exchange." />;
+  if (usable.length < 2) return <Empty text="Todavía no hay histórico suficiente para graficar." />;
 
-  const width = 1000;
-  const height = 280;
-  const pad = 24;
   const balances = usable.map((point) => point.reserveBtc as number);
   const prices = usable.map((point) => point.priceUsd).filter((value): value is number => value != null);
-  const balanceMin = Math.min(...balances);
-  const balanceMax = Math.max(...balances);
-  const priceMin = prices.length ? Math.min(...prices) : 0;
-  const priceMax = prices.length ? Math.max(...prices) : 1;
-  const balancePath = linePath(usable.map((point) => point.reserveBtc as number), width, height, pad, balanceMin, balanceMax);
-  const pricePath = prices.length === usable.length
-    ? linePath(usable.map((point) => point.priceUsd as number), width, height, pad, priceMin, priceMax)
-    : "";
+  const balanceDomain = paddedDomain(Math.min(...balances), Math.max(...balances));
+  const priceDomain = prices.length
+    ? paddedDomain(Math.min(...prices), Math.max(...prices))
+    : ([0, 1] as const);
+
+  const balancePath = linePath(
+    balances,
+    balanceDomain,
+    CHART_WIDTH,
+    CHART_HEIGHT,
+    MARGIN,
+  );
+  const pricePath = indexedLinePath(
+    usable,
+    (point) => point.priceUsd,
+    priceDomain,
+    CHART_WIDTH,
+    CHART_HEIGHT,
+    MARGIN,
+  );
+
+  const balanceTicks = numericTicks(balanceDomain, 5);
+  const priceTicks = numericTicks(priceDomain, 5);
+  const dateTicks = dateTickIndexes(usable.length, 6);
+  const plotBottom = CHART_HEIGHT - MARGIN.bottom;
+  const plotRight = CHART_WIDTH - MARGIN.right;
 
   return (
     <div className="exchange-svg-wrap">
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Histórico de saldo BTC y precio">
-        <defs>
-          <linearGradient id="reserveFill" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="currentColor" stopOpacity="0.28" />
-            <stop offset="100%" stopColor="currentColor" stopOpacity="0.02" />
-          </linearGradient>
-        </defs>
+      <svg viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} role="img" aria-label="Histórico de saldo BTC y precio">
         <g className="chart-grid-lines">
-          {[0.2, 0.4, 0.6, 0.8].map((ratio) => <line key={ratio} x1={pad} x2={width - pad} y1={height * ratio} y2={height * ratio} />)}
+          {balanceTicks.map((value) => {
+            const y = mapY(value, balanceDomain, CHART_HEIGHT, MARGIN);
+            return <line key={value} x1={MARGIN.left} x2={plotRight} y1={y} y2={y} />;
+          })}
         </g>
-        <path className="reserve-area" d={`${balancePath} L ${width - pad} ${height - pad} L ${pad} ${height - pad} Z`} />
+
+        <path
+          className="reserve-area"
+          d={`${balancePath} L ${plotRight} ${plotBottom} L ${MARGIN.left} ${plotBottom} Z`}
+        />
         <path className="reserve-line" d={balancePath} />
         {pricePath ? <path className="price-line" d={pricePath} /> : null}
+
+        <g className="chart-axis chart-axis-left">
+          {balanceTicks.map((value) => {
+            const y = mapY(value, balanceDomain, CHART_HEIGHT, MARGIN);
+            return <text key={value} x={MARGIN.left - 10} y={y + 4} textAnchor="end">{formatAxisBtc(value)}</text>;
+          })}
+          <text className="axis-title" x={14} y={MARGIN.top} textAnchor="start">Saldo BTC</text>
+        </g>
+
+        <g className="chart-axis chart-axis-right">
+          {priceTicks.map((value) => {
+            const y = mapY(value, priceDomain, CHART_HEIGHT, MARGIN);
+            return <text key={value} x={plotRight + 10} y={y + 4} textAnchor="start">{formatAxisUsd(value)}</text>;
+          })}
+          <text className="axis-title" x={CHART_WIDTH - 12} y={MARGIN.top} textAnchor="end">Precio BTC</text>
+        </g>
+
+        <g className="chart-axis chart-axis-x">
+          {dateTicks.map((index) => {
+            const x = mapX(index, usable.length, CHART_WIDTH, MARGIN);
+            return (
+              <g key={index}>
+                <line x1={x} x2={x} y1={plotBottom} y2={plotBottom + 5} />
+                <text x={x} y={CHART_HEIGHT - 18} textAnchor="middle">{formatAxisDate(usable[index]?.date)}</text>
+              </g>
+            );
+          })}
+        </g>
       </svg>
-      <div className="chart-legend"><span className="reserve-dot" />Saldo BTC <span className="price-dot" />Precio BTC</div>
+      <div className="chart-legend">
+        <span className="reserve-dot" />Saldo BTC
+        <span className="price-dot" />Precio BTC
+      </div>
     </div>
   );
 }
 
 function FlowChart({ points }: { points: ExchangeHistoryPoint[] }) {
-  const usable = points.filter((point) => point.inflowBtc != null || point.outflowBtc != null).slice(-140);
-  if (!usable.length) return <Empty text="Todavía no hay histórico de entradas/salidas para este exchange." />;
+  const usable = points
+    .filter((point) => point.inflowBtc != null || point.outflowBtc != null)
+    .slice(-180);
+  if (!usable.length) return <Empty text="Todavía no hay histórico de entradas/salidas para graficar." />;
 
-  const width = 1000;
-  const height = 280;
-  const pad = 24;
   const maxFlow = Math.max(1, ...usable.flatMap((point) => [point.inflowBtc ?? 0, point.outflowBtc ?? 0]));
-  const barWidth = Math.max(1.4, (width - pad * 2) / usable.length / 2.6);
-  const center = height / 2;
+  const flowDomain = [-maxFlow, maxFlow] as const;
+  const prices = usable.map((point) => point.priceUsd).filter((value): value is number => value != null);
+  const priceDomain = prices.length
+    ? paddedDomain(Math.min(...prices), Math.max(...prices))
+    : ([0, 1] as const);
+  const pricePath = indexedLinePath(
+    usable,
+    (point) => point.priceUsd,
+    priceDomain,
+    CHART_WIDTH,
+    CHART_HEIGHT,
+    MARGIN,
+  );
+
+  const plotRight = CHART_WIDTH - MARGIN.right;
+  const plotBottom = CHART_HEIGHT - MARGIN.bottom;
+  const zeroY = mapY(0, flowDomain, CHART_HEIGHT, MARGIN);
+  const barWidth = Math.max(1.4, (plotRight - MARGIN.left) / usable.length / 2.5);
+  const flowTicks = numericTicks(flowDomain, 5);
+  const priceTicks = numericTicks(priceDomain, 5);
+  const dateTicks = dateTickIndexes(usable.length, 6);
 
   return (
     <div className="exchange-svg-wrap">
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Entradas y salidas diarias de BTC">
-        <line className="flow-zero" x1={pad} x2={width - pad} y1={center} y2={center} />
+      <svg viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} role="img" aria-label="Entradas y salidas diarias de BTC con precio BTC">
+        <g className="chart-grid-lines">
+          {flowTicks.map((value) => {
+            const y = mapY(value, flowDomain, CHART_HEIGHT, MARGIN);
+            return <line key={value} x1={MARGIN.left} x2={plotRight} y1={y} y2={y} />;
+          })}
+        </g>
+        <line className="flow-zero" x1={MARGIN.left} x2={plotRight} y1={zeroY} y2={zeroY} />
+
         {usable.map((point, index) => {
-          const x = pad + (index / Math.max(1, usable.length - 1)) * (width - pad * 2);
-          const inHeight = ((point.inflowBtc ?? 0) / maxFlow) * (center - pad);
-          const outHeight = ((point.outflowBtc ?? 0) / maxFlow) * (center - pad);
+          const x = mapX(index, usable.length, CHART_WIDTH, MARGIN);
+          const inflow = point.inflowBtc ?? 0;
+          const outflow = point.outflowBtc ?? 0;
+          const inflowY = mapY(inflow, flowDomain, CHART_HEIGHT, MARGIN);
+          const outflowY = mapY(-outflow, flowDomain, CHART_HEIGHT, MARGIN);
           return (
             <g key={`${point.date}-${index}`}>
-              <rect className="flow-in" x={x - barWidth} y={center - inHeight} width={barWidth} height={inHeight} />
-              <rect className="flow-out" x={x} y={center} width={barWidth} height={outHeight} />
+              <rect className="flow-in" x={x - barWidth} y={inflowY} width={barWidth} height={Math.max(0, zeroY - inflowY)} />
+              <rect className="flow-out" x={x} y={zeroY} width={barWidth} height={Math.max(0, outflowY - zeroY)} />
             </g>
           );
         })}
+
+        {pricePath ? <path className="price-line flow-price-line" d={pricePath} /> : null}
+
+        <g className="chart-axis chart-axis-left">
+          {flowTicks.map((value) => {
+            const y = mapY(value, flowDomain, CHART_HEIGHT, MARGIN);
+            return <text key={value} x={MARGIN.left - 10} y={y + 4} textAnchor="end">{formatAxisBtcSigned(value)}</text>;
+          })}
+          <text className="axis-title" x={14} y={MARGIN.top} textAnchor="start">Flujo BTC/día</text>
+        </g>
+
+        <g className="chart-axis chart-axis-right">
+          {priceTicks.map((value) => {
+            const y = mapY(value, priceDomain, CHART_HEIGHT, MARGIN);
+            return <text key={value} x={plotRight + 10} y={y + 4} textAnchor="start">{formatAxisUsd(value)}</text>;
+          })}
+          <text className="axis-title" x={CHART_WIDTH - 12} y={MARGIN.top} textAnchor="end">Precio BTC</text>
+        </g>
+
+        <g className="chart-axis chart-axis-x">
+          {dateTicks.map((index) => {
+            const x = mapX(index, usable.length, CHART_WIDTH, MARGIN);
+            return (
+              <g key={index}>
+                <line x1={x} x2={x} y1={plotBottom} y2={plotBottom + 5} />
+                <text x={x} y={CHART_HEIGHT - 18} textAnchor="middle">{formatAxisDate(usable[index]?.date)}</text>
+              </g>
+            );
+          })}
+        </g>
       </svg>
-      <div className="chart-legend"><span className="flow-in-dot" />Entradas <span className="flow-out-dot" />Salidas</div>
+      <div className="chart-legend">
+        <span className="flow-in-dot" />Entradas
+        <span className="flow-out-dot" />Salidas
+        <span className="price-dot" />Precio BTC
+      </div>
     </div>
   );
 }
 
-function linePath(values: number[], width: number, height: number, pad: number, min: number, max: number) {
-  const range = max - min || 1;
-  return values.map((value, index) => {
-    const x = pad + (index / Math.max(1, values.length - 1)) * (width - pad * 2);
-    const y = height - pad - ((value - min) / range) * (height - pad * 2);
-    return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
-  }).join(" ");
+function paddedDomain(min: number, max: number): readonly [number, number] {
+  const rawRange = max - min;
+  const pad = (rawRange || Math.abs(max) || 1) * 0.06;
+  return [min - pad, max + pad] as const;
 }
 
-function Delta({ value }: { value: number | null }) {
-  if (value == null) return <span>—</span>;
-  return <span className={value >= 0 ? "positive" : "negative"}>{formatSignedBtc(value)}</span>;
+function numericTicks(domain: readonly [number, number], count: number): number[] {
+  const [min, max] = domain;
+  if (count <= 1) return [min];
+  return Array.from({ length: count }, (_, index) => min + (index / (count - 1)) * (max - min));
+}
+
+function dateTickIndexes(length: number, count: number): number[] {
+  if (length <= 1) return [0];
+  return Array.from(
+    new Set(Array.from({ length: Math.min(count, length) }, (_, index) => Math.round((index / Math.max(1, Math.min(count, length) - 1)) * (length - 1)))),
+  );
+}
+
+function mapX(index: number, length: number, width: number, margin: typeof MARGIN): number {
+  const plotWidth = width - margin.left - margin.right;
+  return margin.left + (index / Math.max(1, length - 1)) * plotWidth;
+}
+
+function mapY(value: number, domain: readonly [number, number], height: number, margin: typeof MARGIN): number {
+  const [min, max] = domain;
+  const range = max - min || 1;
+  const plotHeight = height - margin.top - margin.bottom;
+  return margin.top + (1 - (value - min) / range) * plotHeight;
+}
+
+function linePath(
+  values: number[],
+  domain: readonly [number, number],
+  width: number,
+  height: number,
+  margin: typeof MARGIN,
+): string {
+  return values
+    .map((value, index) => {
+      const x = mapX(index, values.length, width, margin);
+      const y = mapY(value, domain, height, margin);
+      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    })
+    .join(" ");
+}
+
+function indexedLinePath<T>(
+  points: T[],
+  getValue: (point: T) => number | null,
+  domain: readonly [number, number],
+  width: number,
+  height: number,
+  margin: typeof MARGIN,
+): string {
+  const commands: string[] = [];
+  let started = false;
+  points.forEach((point, index) => {
+    const value = getValue(point);
+    if (value == null || !Number.isFinite(value)) {
+      started = false;
+      return;
+    }
+    const x = mapX(index, points.length, width, margin);
+    const y = mapY(value, domain, height, margin);
+    commands.push(`${started ? "L" : "M"} ${x.toFixed(2)} ${y.toFixed(2)}`);
+    started = true;
+  });
+  return commands.join(" ");
 }
 
 function MetricRow({ label, value, tone }: { label: string; value: string; tone?: string }) {
@@ -395,15 +496,27 @@ function formatSignedCoin(value?: number | null, symbol = "BTC"): string {
 }
 
 function formatBtcBalance(value: number): string {
-  return `${formatBtcNumber(value)} BTC`;
+  return `${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(value)} BTC`;
 }
 
-function formatBtcNumber(value: number): string {
-  return new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(value);
+function formatAxisBtc(value: number): string {
+  return `${new Intl.NumberFormat("es-AR", { notation: "compact", maximumFractionDigits: 2 }).format(value)} BTC`;
 }
 
-function formatSignedBtc(value: number): string {
-  return `${value >= 0 ? "+" : "−"}${formatBtcNumber(Math.abs(value))}`;
+function formatAxisBtcSigned(value: number): string {
+  if (Math.abs(value) < 1e-9) return "0 BTC";
+  return `${value > 0 ? "+" : "−"}${new Intl.NumberFormat("es-AR", { notation: "compact", maximumFractionDigits: 1 }).format(Math.abs(value))}`;
+}
+
+function formatAxisUsd(value: number): string {
+  return `$${new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value)}`;
+}
+
+function formatAxisDate(value?: string): string {
+  if (!value) return "—";
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  return new Intl.DateTimeFormat("es-AR", { month: "short", year: "2-digit", timeZone: "UTC" }).format(timestamp);
 }
 
 function formatSourceDate(value?: string): string {
