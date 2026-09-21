@@ -120,7 +120,7 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
 
   const sourceLabel = useMemo(() => {
     if (!payload?.sourcesUsed.length) return "—";
-    return payload.sourcesUsed.map((item) => capitalize(item)).join(" + ");
+    return payload.sourcesUsed.map(exchangeLabel).join(" + ");
   }, [payload]);
 
   function handlePointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
@@ -129,22 +129,13 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
     const geometry = computeGeometry(payload, rect.width, rect.height);
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
-    if (
-      x < geometry.left ||
-      x > geometry.right ||
-      y < geometry.top ||
-      y > geometry.bottom
-    ) {
+    if (x < geometry.left || x > geometry.right || y < geometry.top || y > geometry.bottom) {
       setHover(null);
       return;
     }
 
-    const ts =
-      geometry.minTs +
-      ((x - geometry.left) / geometry.plotWidth) * (geometry.maxTs - geometry.minTs);
-    const price =
-      geometry.maxPrice -
-      ((y - geometry.top) / geometry.plotHeight) * (geometry.maxPrice - geometry.minPrice);
+    const ts = geometry.minTs + ((x - geometry.left) / geometry.plotWidth) * (geometry.maxTs - geometry.minTs);
+    const price = geometry.maxPrice - ((y - geometry.top) / geometry.plotHeight) * (geometry.maxPrice - geometry.minPrice);
     const priceBin = (geometry.maxPrice - geometry.minPrice) / Y_BINS;
     const active = payload.zones.filter(
       (zone) =>
@@ -158,7 +149,6 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
     const shortExposureUsd = active
       .filter((zone) => zone.side === "short")
       .reduce((sum, zone) => sum + zone.exposureUsd, 0);
-    const exposureUsd = longExposureUsd + shortExposureUsd;
     const strongest = [...active].sort((a, b) => b.exposureUsd - a.exposureUsd)[0];
 
     setHover({
@@ -168,7 +158,7 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
       y,
       ts,
       price,
-      exposureUsd,
+      exposureUsd: longExposureUsd + shortExposureUsd,
       longExposureUsd,
       shortExposureUsd,
       leverage: strongest ? `${strongest.leverage}x` : "—",
@@ -287,7 +277,6 @@ function drawMap(
   const grid = buildHeatmapGrid(payload.zones, geometry, payload.hours);
   drawHeatmapGrid(ctx, grid, geometry, threshold);
   drawCandles(ctx, payload.candles, geometry);
-  drawCurrentPrice(ctx, payload.candles, geometry);
   drawAxes(ctx, geometry);
 }
 
@@ -461,30 +450,6 @@ function drawCandles(
   }
 }
 
-function drawCurrentPrice(
-  ctx: CanvasRenderingContext2D,
-  candles: HistoricalCandle[],
-  geometry: Geometry,
-): void {
-  const price = candles.at(-1)?.close;
-  if (price == null || price < geometry.minPrice || price > geometry.maxPrice) return;
-  const y = priceToY(price, geometry);
-  ctx.strokeStyle = "rgba(230, 238, 247, .48)";
-  ctx.setLineDash([4, 4]);
-  ctx.beginPath();
-  ctx.moveTo(geometry.left, y);
-  ctx.lineTo(geometry.right, y);
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  ctx.fillStyle = "rgba(10, 16, 24, .96)";
-  ctx.fillRect(geometry.right + 4, y - 8, 56, 16);
-  ctx.fillStyle = "#e9f0f7";
-  ctx.font = "bold 9px ui-monospace, monospace";
-  ctx.textAlign = "center";
-  ctx.fillText(formatPrice(price), geometry.right + 32, y + 3);
-}
-
 function drawGrid(ctx: CanvasRenderingContext2D, geometry: Geometry): void {
   ctx.strokeStyle = "rgba(255,255,255,.075)";
   ctx.lineWidth = 1;
@@ -611,6 +576,7 @@ function formatAxisTime(timestamp: number): string {
   }).format(timestamp);
 }
 
-function capitalize(value: string): string {
+function exchangeLabel(value: string): string {
+  if (value === "okx") return "OKX";
   return value.charAt(0).toUpperCase() + value.slice(1);
 }

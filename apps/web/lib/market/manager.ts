@@ -1,12 +1,14 @@
 import { DEFAULT_SYMBOL, normalizeSymbol } from "./symbols";
-import type { MarketViewState, SourceStatus, WorkerCommand, WorkerEvent } from "./types";
+import { LIVE_EXCHANGES, type MarketViewState, type SourceStatus, type WorkerCommand, type WorkerEvent } from "./types";
 
 type Listener = () => void;
 
-const INITIAL_SOURCES: SourceStatus[] = [
-  { exchange: "binance", connected: false, state: "connecting", detail: "Esperando motor de mercado" },
-  { exchange: "bybit", connected: false, state: "connecting", detail: "Esperando motor de mercado" },
-];
+const INITIAL_SOURCES: SourceStatus[] = LIVE_EXCHANGES.map((exchange) => ({
+  exchange,
+  connected: false,
+  state: "connecting",
+  detail: "Esperando motor de mercado",
+}));
 
 function initialState(symbol: string): MarketViewState {
   return {

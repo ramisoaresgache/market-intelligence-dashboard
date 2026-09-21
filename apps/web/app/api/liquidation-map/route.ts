@@ -14,8 +14,9 @@ export const dynamic = "force-dynamic";
 
 const BYBIT_BASE = "https://api.bybit.com";
 const BINANCE_BASE = "https://fapi.binance.com";
+const OKX_BASE = "https://www.okx.com";
 const VALID_HOURS = new Set([4, 12, 24]);
-const VALID_SOURCES = new Set<LiquidationMapSource>(["aggregate", "binance", "bybit"]);
+const VALID_SOURCES = new Set<LiquidationMapSource>(["aggregate", "binance", "bybit", "okx"]);
 
 interface ExchangeDataset {
   exchange: LiquidationMapExchange;
@@ -45,14 +46,10 @@ export async function GET(request: Request) {
   const end = Date.now();
   const start = end - hoursParam * 60 * 60 * 1000;
   const exchanges: LiquidationMapExchange[] =
-    sourceParam === "aggregate" ? ["binance", "bybit"] : [sourceParam];
+    sourceParam === "aggregate" ? ["binance", "bybit", "okx"] : [sourceParam];
 
   const settled = await Promise.allSettled(
-    exchanges.map((exchange) =>
-      exchange === "binance"
-        ? fetchBinanceDataset(symbol, start, end)
-        : fetchBybitDataset(symbol, start, end),
-    ),
+    exchanges.map((exchange) => fetchDataset(exchange, symbol, start, end)),
   );
 
   const datasets: ExchangeDataset[] = [];
@@ -60,11 +57,8 @@ export async function GET(request: Request) {
   settled.forEach((result, index) => {
     const exchange = exchanges[index];
     if (!exchange) return;
-    if (result.status === "fulfilled") {
-      datasets.push(result.value);
-    } else {
-      warnings.push(`${exchange}: ${errorMessage(result.reason)}`);
-    }
+    if (result.status === "fulfilled") datasets.push(result.value);
+    else warnings.push(`${exchange}: ${errorMessage(result.reason)}`);
   });
 
   if (!datasets.length) {
@@ -91,10 +85,19 @@ export async function GET(request: Request) {
   };
 
   return NextResponse.json(payload, {
-    headers: {
-      "Cache-Control": "public, s-maxage=45, stale-while-revalidate=60",
-    },
+    headers: { "Cache-Control": "public, s-maxage=45, stale-while-revalidate=60" },
   });
+}
+
+function fetchDataset(
+  exchange: LiquidationMapExchange,
+  symbol: string,
+  start: number,
+  end: number,
+): Promise<ExchangeDataset> {
+  if (exchange === "binance") return fetchBinanceDataset(symbol, start, end);
+  if (exchange === "bybit") return fetchBybitDataset(symbol, start, end);
+  return fetchOkxDataset(symbol, start, end);
 }
 
 async function fetchBybitDataset(
@@ -117,6 +120,18 @@ async function fetchBinanceDataset(
   const openInterest = await fetchBinanceOpenInterest(symbol, start, end, candles);
   if (!candles.length || !openInterest.length) throw new Error("histórico insuficiente");
   return { exchange: "binance", candles, openInterest };
+}
+
+async function fetchOkxDataset(
+  symbol: string,
+  start: number,
+  end: number,
+): Promise<ExchangeDataset> {
+  const instId = `${symbol.slice(0, -4)}-USDT-SWAP`;
+  const candles = await fetchOkxCandles(instId, start, end);
+  const openInterest = await fetchOkxOpenInterest(instId, start, end);
+  if (!candles.length || !openInterest.length) throw new Error("histórico insuficiente");
+  return { exchange: "okx", candles, openInterest };
 }
 
 async function fetchBybitCandles(
@@ -174,26 +189,19 @@ async function fetchBybitOpenInterest(
     });
     if (cursor) params.set("cursor", cursor);
 
-    const response = await fetch(`${BYBIT_BASE}/v5/market/open-interest?${params}`, {
-      cache: "no-store",
-    });
+    const response = await fetch(`${BYBIT_BASE}/v5/market/open-interest?${params}`, { cache: "no-store" });
     if (!response.ok) throw new Error(`open interest HTTP ${response.status}`);
     const payload = (await response.json()) as {
       retCode?: number;
       retMsg?: string;
-      result?: {
-        list?: Array<{ openInterest?: string; timestamp?: string }>;
-        nextPageCursor?: string;
-      };
+      result?: { list?: Array<{ openInterest?: string; timestamp?: string }>; nextPageCursor?: string };
     };
     if (payload.retCode !== 0) throw new Error(payload.retMsg || "error al consultar OI");
 
     for (const item of payload.result?.list ?? []) {
       const ts = Number(item.timestamp);
       const openInterest = Number(item.openInterest);
-      if (Number.isFinite(ts) && Number.isFinite(openInterest) && openInterest > 0) {
-        raw.push({ ts, openInterest });
-      }
+      if (Number.isFinite(ts) && Number.isFinite(openInterest) && openInterest > 0) raw.push({ ts, openInterest });
     }
 
     cursor = payload.result?.nextPageCursor ?? "";
@@ -201,10 +209,7 @@ async function fetchBybitOpenInterest(
   }
 
   return raw
-    .map((point) => ({
-      ts: point.ts,
-      openInterestUsd: point.openInterest * nearestClose(candles, point.ts),
-    }))
+    .map((point) => ({ ts: point.ts, openInterestUsd: point.openInterest * nearestClose(candles, point.ts) }))
     .filter((point) => Number.isFinite(point.openInterestUsd) && point.openInterestUsd > 0)
     .sort((a, b) => a.ts - b.ts);
 }
@@ -251,9 +256,7 @@ async function fetchBinanceOpenInterest(
     endTime: String(end),
     limit: "500",
   });
-  const response = await fetch(`${BINANCE_BASE}/futures/data/openInterestHist?${params}`, {
-    cache: "no-store",
-  });
+  const response = await fetch(`${BINANCE_BASE}/futures/data/openInterestHist?${params}`, { cache: "no-store" });
   if (!response.ok) throw new Error(`open interest HTTP ${response.status}`);
   const payload = (await response.json()) as Array<{
     timestamp?: number;
@@ -267,19 +270,90 @@ async function fetchBinanceOpenInterest(
       const directValue = Number(item.sumOpenInterestValue);
       const contracts = Number(item.sumOpenInterest);
       const fallback = contracts * nearestClose(candles, ts);
-      return {
-        ts,
-        openInterestUsd:
-          Number.isFinite(directValue) && directValue > 0 ? directValue : fallback,
-      };
+      return { ts, openInterestUsd: Number.isFinite(directValue) && directValue > 0 ? directValue : fallback };
     })
-    .filter(
-      (point) =>
-        Number.isFinite(point.ts) &&
-        Number.isFinite(point.openInterestUsd) &&
-        point.openInterestUsd > 0,
-    )
+    .filter((point) => Number.isFinite(point.ts) && Number.isFinite(point.openInterestUsd) && point.openInterestUsd > 0)
     .sort((a, b) => a.ts - b.ts);
+}
+
+async function fetchOkxCandles(
+  instId: string,
+  start: number,
+  end: number,
+): Promise<HistoricalCandle[]> {
+  const params = new URLSearchParams({ instId, bar: "5m", limit: "300" });
+  const response = await fetch(`${OKX_BASE}/api/v5/market/candles?${params}`, { cache: "no-store" });
+  if (!response.ok) throw new Error(`kline HTTP ${response.status}`);
+  const payload = (await response.json()) as { code?: string; msg?: string; data?: string[][] };
+  if (payload.code !== "0") throw new Error(payload.msg || "error al consultar velas");
+
+  return (payload.data ?? [])
+    .map((item) => ({
+      ts: Number(item[0]),
+      open: Number(item[1]),
+      high: Number(item[2]),
+      low: Number(item[3]),
+      close: Number(item[4]),
+      turnoverUsd: Number(item[7]),
+    }))
+    .filter((item) => item.ts >= start && item.ts <= end)
+    .filter(validCandle)
+    .sort((a, b) => a.ts - b.ts);
+}
+
+async function fetchOkxOpenInterest(
+  instId: string,
+  start: number,
+  end: number,
+): Promise<HistoricalOpenInterestPoint[]> {
+  const points = new Map<number, HistoricalOpenInterestPoint>();
+  let endCursor = end;
+
+  for (let page = 0; page < 4; page += 1) {
+    const params = new URLSearchParams({
+      instId,
+      period: "5m",
+      begin: String(start),
+      end: String(endCursor),
+      limit: "100",
+    });
+    const response = await fetch(`${OKX_BASE}/api/v5/rubik/stat/contracts/open-interest-history?${params}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error(`open interest HTTP ${response.status}`);
+    const payload = (await response.json()) as { code?: string; msg?: string; data?: unknown[] };
+    if (payload.code !== "0") throw new Error(payload.msg || "error al consultar OI");
+
+    const pagePoints = (payload.data ?? []).flatMap((row) => {
+      const point = parseOkxOi(row);
+      return point && point.ts >= start && point.ts <= end ? [point] : [];
+    });
+    for (const point of pagePoints) points.set(point.ts, point);
+    if (!pagePoints.length) break;
+
+    const oldest = Math.min(...pagePoints.map((point) => point.ts));
+    if (oldest <= start || oldest >= endCursor) break;
+    endCursor = oldest - 1;
+  }
+
+  return [...points.values()].sort((a, b) => a.ts - b.ts);
+}
+
+function parseOkxOi(row: unknown): HistoricalOpenInterestPoint | null {
+  if (Array.isArray(row)) {
+    const ts = Number(row[0]);
+    const directUsd = Number(row[3]);
+    if (Number.isFinite(ts) && Number.isFinite(directUsd) && directUsd > 0) {
+      return { ts, openInterestUsd: directUsd };
+    }
+    return null;
+  }
+  if (typeof row !== "object" || row === null) return null;
+  const data = row as Record<string, unknown>;
+  const ts = Number(data.ts);
+  const directUsd = Number(data.oiUsd ?? data.openInterestValue);
+  if (!Number.isFinite(ts) || !Number.isFinite(directUsd) || directUsd <= 0) return null;
+  return { ts, openInterestUsd: directUsd };
 }
 
 function nearestClose(candles: HistoricalCandle[], ts: number): number {
@@ -302,10 +376,7 @@ function validCandle(candle: HistoricalCandle): boolean {
     Number.isFinite(candle.high) &&
     Number.isFinite(candle.low) &&
     Number.isFinite(candle.close) &&
-    candle.open > 0 &&
-    candle.high > 0 &&
-    candle.low > 0 &&
-    candle.close > 0
+    candle.open > 0 && candle.high > 0 && candle.low > 0 && candle.close > 0
   );
 }
 

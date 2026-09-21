@@ -9,12 +9,13 @@ import {
 } from "../lib/market/engine/aggregate";
 import type { LiquidationMapSource } from "../lib/market/liquidation-model";
 import { DEFAULT_SYMBOL } from "../lib/market/symbols";
-import type {
-  AggregatedOrderLevel,
-  Exchange,
-  MarketInstrument,
-  NormalizedOrderBook,
-  SourceStatus,
+import {
+  LIVE_EXCHANGES,
+  type AggregatedOrderLevel,
+  type Exchange,
+  type MarketInstrument,
+  type NormalizedOrderBook,
+  type SourceStatus,
 } from "../lib/market/types";
 import { loadMarketUniverse } from "../lib/market/universe";
 import { setMarketSymbol, useMarketEngine } from "../lib/market/use-market-engine";
@@ -25,10 +26,21 @@ const compact = new Intl.NumberFormat("es-AR", {
 });
 const LIQUIDATION_HOURS = [4, 12, 24] as const;
 const LIQUIDATION_SOURCES: Array<{ value: LiquidationMapSource; label: string }> = [
-  { value: "aggregate", label: "Agregado" },
+  { value: "aggregate", label: "Binance + Bybit + OKX" },
   { value: "binance", label: "Binance" },
   { value: "bybit", label: "Bybit" },
+  { value: "okx", label: "OKX" },
 ];
+const ORDERBOOK_SOURCES: ExchangeFilter[] = ["all", ...LIVE_EXCHANGES];
+const EXCHANGE_LABELS: Record<Exchange, string> = {
+  binance: "Binance",
+  bybit: "Bybit",
+  okx: "OKX",
+  mexc: "MEXC",
+  whitebit: "WhiteBIT",
+  bingx: "BingX",
+  bitunix: "Bitunix",
+};
 const QUICK_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT"];
 
 export default function Dashboard() {
@@ -57,8 +69,13 @@ export default function Dashboard() {
   const books = snapshot?.orderBooks ?? [];
   const bybit = snapshot?.metrics.find((metric) => metric.exchange === "bybit");
   const binance = snapshot?.metrics.find((metric) => metric.exchange === "binance");
+  const okx = snapshot?.metrics.find((metric) => metric.exchange === "okx");
   const currentPrice =
-    bybit?.markPrice ?? binance?.markPrice ?? bybit?.lastPrice ?? midpointFromBooks(books);
+    bybit?.markPrice ??
+    binance?.markPrice ??
+    okx?.markPrice ??
+    bybit?.lastPrice ??
+    midpointFromBooks(books);
   const aggregated = useMemo(
     () => aggregateOrderBooks(books, exchangeFilter, undefined, 24),
     [books, exchangeFilter],
@@ -76,7 +93,7 @@ export default function Dashboard() {
   );
   const displayedMarkets: MarketInstrument[] = universe.length
     ? universe
-    : [{ symbol: DEFAULT_SYMBOL, baseCoin: "BTC", quoteCoin: "USDT", exchanges: ["binance", "bybit"] }];
+    : [{ symbol: DEFAULT_SYMBOL, baseCoin: "BTC", quoteCoin: "USDT", exchanges: [...LIVE_EXCHANGES] }];
 
   return (
     <main>
@@ -92,7 +109,7 @@ export default function Dashboard() {
               key={source.exchange}
               title={source.detail}
             >
-              <i /> {source.exchange} · {connectionLabel(source)}
+              <i /> {EXCHANGE_LABELS[source.exchange]} · {connectionLabel(source)}
             </span>
           ))}
           <span className="public-badge">DATOS PÚBLICOS · $0</span>
@@ -104,9 +121,9 @@ export default function Dashboard() {
           <span className="kicker">MERCADO</span>
           <h2>Elegí una moneda y analizá el mercado en vivo.</h2>
           <p>
-            Se muestran perpetuos USDT disponibles tanto en Binance como en Bybit. El libro pesado
-            se conecta sólo para el mercado seleccionado para mantener la página rápida incluso con
-            cientos de pares disponibles.
+            La página combina fuentes públicas de varios exchanges para el perpetuo USDT seleccionado.
+            Sólo se abren los feeds pesados del par activo para mantener la interfaz rápida aunque el
+            universo tenga cientos de mercados.
           </p>
         </div>
         <div className="market-picker">
@@ -124,7 +141,7 @@ export default function Dashboard() {
           </select>
           <small>
             {universe.length
-              ? `${universe.length} mercados compatibles`
+              ? `${universe.length} mercados detectados`
               : "Cargando mercados disponibles…"}
           </small>
         </div>
@@ -163,15 +180,15 @@ export default function Dashboard() {
           <Metric label="Mejor compra de referencia" value={formatPrice(referenceTop?.bid)} tone="positive" />
           <Metric label="Mejor venta de referencia" value={formatPrice(referenceTop?.ask)} tone="negative" />
           <Metric
-            label={referenceTop ? `Spread · ${referenceTop.exchange}` : "Spread"}
+            label={referenceTop ? `Spread · ${EXCHANGE_LABELS[referenceTop.exchange]}` : "Spread"}
             value={formatPrice(referenceTop?.spread)}
           />
           <Metric label="Interés abierto Bybit (USD)" value={formatMoney(bybit?.openInterestValue)} />
           <Metric label="Interés abierto Binance (USD)" value={formatMoney(binance?.openInterestValue)} />
           <Metric
             label="Tasa de financiación"
-            value={formatFunding(bybit?.fundingRate)}
-            tone={fundingTone(bybit?.fundingRate)}
+            value={formatFunding(bybit?.fundingRate ?? okx?.fundingRate)}
+            tone={fundingTone(bybit?.fundingRate ?? okx?.fundingRate)}
           />
         </div>
       </section>
@@ -183,9 +200,8 @@ export default function Dashboard() {
               <span className="kicker">MAPA DE LIQUIDACIONES ESTIMADAS</span>
               <h3>Zonas donde podría concentrarse el riesgo de liquidación</h3>
               <p>
-                Las bandas muestran exposición estimada por nivel de precio a partir de velas,
-                volumen e interés abierto. Las velas se dibujan encima para mantener el contexto del
-                movimiento real del mercado.
+                Las bandas estiman exposición por nivel de precio a partir de velas e interés abierto
+                histórico. Las velas se dibujan encima para conservar el contexto real del mercado.
               </p>
             </div>
             <div className="map-controls">
@@ -229,14 +245,14 @@ export default function Dashboard() {
               <h3>Profundidad visible</h3>
             </div>
             <div className="segmented exchange-filter">
-              {(["all", "binance", "bybit"] as const).map((exchange) => (
+              {ORDERBOOK_SOURCES.map((exchange) => (
                 <button
                   type="button"
                   key={exchange}
                   className={exchangeFilter === exchange ? "active" : ""}
                   onClick={() => setExchangeFilter(exchange)}
                 >
-                  {exchange === "all" ? "Todos" : exchange}
+                  {exchange === "all" ? "Todos" : EXCHANGE_LABELS[exchange]}
                 </button>
               ))}
             </div>
@@ -266,8 +282,8 @@ export default function Dashboard() {
             </div>
           </div>
           <p className="muted-note">
-            Bybit informa todas las liquidaciones de su canal público. Binance publica cobertura
-            parcial por ventanas de tiempo.
+            Esta sección muestra únicamente feeds públicos de liquidaciones observadas disponibles.
+            No todos los exchanges publican un canal global equivalente.
           </p>
         </article>
 
@@ -292,7 +308,7 @@ export default function Dashboard() {
               .map((item, index) => (
                 <div className="table-row" key={`${item.exchange}-${item.ts}-${index}`}>
                   <span>{formatTime(item.ts)}</span>
-                  <span className="exchange-name">{item.exchange}</span>
+                  <span className="exchange-name">{EXCHANGE_LABELS[item.exchange]}</span>
                   <span className={item.side === "long" ? "negative" : "positive"}>
                     {item.side === "long" ? "Largo" : "Corto"}
                   </span>
