@@ -3,7 +3,6 @@ import type { MarketMetrics, NormalizedOrderBook, OrderLevel } from "../types";
 import { BrowserExchangeAdapter, optionalNumber, type MarketEventSink } from "./base";
 
 const WS_URL = "wss://contract.mexc.com/edge";
-const CONTRACT_DETAIL = "https://contract.mexc.com/api/v1/contract/detail";
 const HEARTBEAT_MS = 15_000;
 
 type MexcPayload = {
@@ -43,21 +42,23 @@ export class MexcAdapter extends BrowserExchangeAdapter {
 
   private async bootstrap(): Promise<void> {
     try {
-      const params = new URLSearchParams({ symbol: this.mexcSymbol });
-      const response = await fetch(`${CONTRACT_DETAIL}?${params}`, { cache: "no-store" });
-      if (!response.ok) throw new Error(`contrato HTTP ${response.status}`);
-      const payload = (await response.json()) as { success?: boolean; data?: unknown };
-      const candidates = Array.isArray(payload.data) ? payload.data : [payload.data];
-      const item = candidates.find((value) => isRecord(value) && value.symbol === this.mexcSymbol);
-      const contractSize = isRecord(item) ? optionalNumber(item.contractSize) : undefined;
-      const state = isRecord(item) ? optionalNumber(item.state) : undefined;
-      if (!payload.success || !contractSize || contractSize <= 0 || (state !== undefined && state !== 0)) {
+      const params = new URLSearchParams({ exchange: "mexc", symbol: this.symbol });
+      const response = await fetch(`/api/exchange-bootstrap?${params.toString()}`, {
+        cache: "no-store",
+      });
+      const payload = (await response.json()) as { contractSize?: number; error?: string };
+      if (!response.ok) throw new Error(payload.error || `bootstrap HTTP ${response.status}`);
+      if (!payload.contractSize || payload.contractSize <= 0) {
         throw new Error("perpetuo MEXC no disponible");
       }
-      this.contractSize = contractSize;
+      this.contractSize = payload.contractSize;
       if (this.active) this.connect(0);
     } catch (error) {
-      this.status({ connected: false, state: "unavailable", detail: error instanceof Error ? error.message : "MEXC no disponible" });
+      this.status({
+        connected: false,
+        state: "unavailable",
+        detail: error instanceof Error ? error.message : "MEXC no disponible",
+      });
     }
   }
 
@@ -67,9 +68,16 @@ export class MexcAdapter extends BrowserExchangeAdapter {
     this.socket = socket;
 
     socket.onopen = () => {
-      socket.send(JSON.stringify({ method: "sub.depth.full", param: { symbol: this.mexcSymbol, limit: 20 } }));
+      socket.send(
+        JSON.stringify({ method: "sub.depth.full", param: { symbol: this.mexcSymbol, limit: 20 } }),
+      );
       socket.send(JSON.stringify({ method: "sub.ticker", param: { symbol: this.mexcSymbol } }));
-      this.status({ connected: true, state: "live", lastMessageAt: Date.now(), detail: "MEXC público activo" });
+      this.status({
+        connected: true,
+        state: "live",
+        lastMessageAt: Date.now(),
+        detail: "MEXC público activo",
+      });
       this.heartbeat = setInterval(() => {
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ method: "ping" }));
       }, HEARTBEAT_MS);
@@ -79,9 +87,18 @@ export class MexcAdapter extends BrowserExchangeAdapter {
       try {
         const payload = JSON.parse(String(message.data)) as MexcPayload;
         this.handle(payload);
-        this.status({ connected: true, state: "live", lastMessageAt: Date.now(), detail: "MEXC público activo" });
+        this.status({
+          connected: true,
+          state: "live",
+          lastMessageAt: Date.now(),
+          detail: "MEXC público activo",
+        });
       } catch (error) {
-        this.status({ connected: false, state: "reconnecting", detail: error instanceof Error ? error.message : "Mensaje MEXC inválido" });
+        this.status({
+          connected: false,
+          state: "reconnecting",
+          detail: error instanceof Error ? error.message : "Mensaje MEXC inválido",
+        });
       }
     };
 
@@ -119,7 +136,11 @@ export class MexcAdapter extends BrowserExchangeAdapter {
     }
 
     if (channel === "push.ticker") {
-      const metrics: MarketMetrics = { exchange: "mexc", symbol: this.symbol, ts: payload.ts ?? Date.now() };
+      const metrics: MarketMetrics = {
+        exchange: "mexc",
+        symbol: this.symbol,
+        ts: payload.ts ?? Date.now(),
+      };
       const last = optionalNumber(data.lastPrice);
       const mark = optionalNumber(data.fairPrice);
       const funding = optionalNumber(data.fundingRate);
@@ -147,8 +168,4 @@ function normalizeMexcLevels(raw: unknown, contractSize: number): OrderLevel[] {
     if (!Number.isFinite(price) || !Number.isFinite(qty) || price <= 0 || qty <= 0) return [];
     return [{ price, qty, notional: price * qty }];
   });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
