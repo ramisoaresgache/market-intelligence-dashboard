@@ -53,7 +53,7 @@ const SESSIONS: Session[] = [
   },
 ];
 
-export function MarketPulse({ symbol, currentPrice }: { symbol: string; currentPrice?: number }) {
+export function MarketPulse({ symbol, currentPrice }: { symbol: string; currentPrice?: number | null }) {
   const [requestState, setRequestState] = useState<{
     key: string;
     payload: DailyPayload | null;
