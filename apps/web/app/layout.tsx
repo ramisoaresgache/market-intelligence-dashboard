@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { AppNav } from "../components/app-nav";
 import "./globals.css";
 import "../components/pr17-global.css";
+import "../components/pr21-global.css";
 
 export const metadata: Metadata = {
   title: "Market Intelligence",
