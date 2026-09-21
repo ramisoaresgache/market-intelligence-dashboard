@@ -44,16 +44,25 @@ Los eventos se acumulan en memoria durante el minuto y se escriben agrupados par
 - `GET /health` — estado de Binance/Bybit y almacenamiento.
 - `GET /v1/liquidations/symbols` — símbolos recolectados.
 - `GET /v1/liquidations/summary?symbol=BTCUSDT` — totales 1h/4h/12h/24h.
+- `GET /v1/diagnostics/binance` — diagnóstico del collector principal contra Binance.
+- `GET /v1/diagnostics/binance-regions` — prueba REST + WebSocket de Binance desde Durable Objects nuevos con hints `weur`, `apac` y `wnam`.
+
+### Diagnóstico regional de Binance
+
+Los probes regionales están separados del collector principal. No crean alarmas, no abren Bybit y no escriben buckets de liquidaciones. Cada probe usa un nombre versionado porque Cloudflare sólo toma `locationHint` en la primera creación de cada Durable Object y el hint es best-effort.
+
+El resultado permite distinguir entre un bloqueo general de Binance hacia Cloudflare y uno dependiente del egress/región. Si una región devuelve REST 200 y/o WebSocket 101 mientras el collector principal recibe 403, esa región queda como candidata para alojar un collector Binance separado.
 
 ## Deploy con Cloudflare Git Integration
 
-En Cloudflare Workers & Pages:
+Configuración usada actualmente en Cloudflare Workers Builds para este monorepo:
 
-- Project name: `market-intelligence-collector`
-- Root directory: `apps/collector`
-- Build command: vacío
-- Deploy command: `npx wrangler deploy`
 - Production branch: `main`
+- Root directory: `/`
+- Build command: `cd apps/collector && npm install`
+- Deploy command: `cd apps/collector && npx wrangler deploy`
+- Version command: `cd apps/collector && npx wrangler versions upload`
+- Build watch path: `apps/collector/**`
 - Builds for non-production branches: desactivado
 - Cloudflare Access: desactivado para esta primera versión
 
