@@ -1,4 +1,21 @@
-export type Exchange = "binance" | "bybit";
+export type Exchange =
+  | "binance"
+  | "bybit"
+  | "okx"
+  | "mexc"
+  | "whitebit"
+  | "bingx"
+  | "bitunix";
+
+export const LIVE_EXCHANGES: Exchange[] = [
+  "binance",
+  "bybit",
+  "okx",
+  "mexc",
+  "whitebit",
+  "bingx",
+  "bitunix",
+];
 
 export type ConnectionState = "connecting" | "live" | "reconnecting" | "unavailable";
 
