@@ -104,7 +104,8 @@ function normalizeEtf(result: PromiseSettledResult<unknown>) {
 
 function normalizeBalance(result: PromiseSettledResult<unknown>) {
   if (result.status === "rejected") return { available: false, error: errorMessage(result.reason) };
-  const data = asRecord(result.value);
+  const source = Array.isArray(result.value) ? result.value[0] : result.value;
+  const data = asRecord(source);
   if (!data) return { available: false, error: "Sin datos" };
   const times = arrayNumbers(data.time_list ?? data.timeList);
   const priceList = arrayNumbers(data.price_list ?? data.priceList);
@@ -135,7 +136,29 @@ function normalizeBalance(result: PromiseSettledResult<unknown>) {
 }
 
 function extractEtfBreakdown(row: Record<string, unknown>) {
-  const reserved = new Set(["time", "timestamp", "flow_usd", "flowUsd", "net_flow_usd", "price_usd", "priceUsd"]);
+  const explicit = Array.isArray(row.etf_flows) ? row.etf_flows : Array.isArray(row.etfFlows) ? row.etfFlows : [];
+  const parsedExplicit = explicit.flatMap((value) => {
+    const item = asRecord(value);
+    if (!item) return [];
+    const ticker = String(item.etf_ticker ?? item.ticker ?? "").trim();
+    const flowUsd = finiteNumber(item.flow_usd ?? item.flowUsd);
+    return ticker ? [{ ticker, flowUsd }] : [];
+  });
+  if (parsedExplicit.length) {
+    return parsedExplicit.sort((a, b) => Math.abs(b.flowUsd) - Math.abs(a.flowUsd)).slice(0, 5);
+  }
+
+  const reserved = new Set([
+    "time",
+    "timestamp",
+    "flow_usd",
+    "flowUsd",
+    "net_flow_usd",
+    "price_usd",
+    "priceUsd",
+    "etf_flows",
+    "etfFlows",
+  ]);
   return Object.entries(row)
     .filter(([key, value]) => !reserved.has(key) && typeof value === "number" && Number.isFinite(value))
     .map(([ticker, flowUsd]) => ({ ticker, flowUsd: Number(flowUsd) }))
