@@ -60,10 +60,10 @@ export async function GET() {
     : ETF_ASSETS.map((asset) =>
         Promise.resolve({
           asset,
-          source: "SoSoValue Demo API",
+          source: "SoSoValue ETF API",
           available: false as const,
           requiresConfig: true,
-          error: "Falta configurar SOSOVALUE_API_KEY (plan Demo gratuito).",
+          error: "Falta configurar SOSOVALUE_API_KEY.",
         }),
       );
 
@@ -77,10 +77,6 @@ export async function GET() {
       ? exchangeResult.value
       : (warnings.push(`Coin Metrics: ${errorMessage(exchangeResult.reason)}`), null);
 
-  if (bitcoinExchange?.exchangeDetailError) {
-    warnings.push(`Detalle por exchange: ${bitcoinExchange.exchangeDetailError}`);
-  }
-
   const etfs = ETF_ASSETS.map((asset, index) => {
     const result = etfResults[index];
     if (result.status === "fulfilled") return result.value;
@@ -88,7 +84,7 @@ export async function GET() {
     warnings.push(`${asset} ETF: ${message}`);
     return {
       asset,
-      source: "SoSoValue Demo API",
+      source: "SoSoValue ETF API",
       available: false as const,
       error: message,
     };
@@ -104,8 +100,10 @@ export async function GET() {
       methodology: {
         exchangeFlows:
           "Coin Metrics FlowIn/FlowOut: BTC enviado hacia o retirado desde direcciones identificadas como exchanges. Sply mide BTC retenido en wallets identificadas del exchange. Las cifras son estimaciones on-chain y pueden subestimar saldos reales si faltan direcciones por identificar.",
+        exchangeDetail:
+          "Coin Metrics Community permite el agregado de BTC, pero algunas métricas de desglose por exchange requieren credenciales con mayor cobertura. Si no están autorizadas, el dashboard conserva los gráficos agregados sin mostrar un error técnico al usuario.",
         etfFlows:
-          "SoSoValue ETF Summary History: flujo neto diario agregado de ETF spot de EE.UU. para BTC, ETH y SOL. El plan Demo es gratuito y requiere una API key server-side.",
+          "SoSoValue ETF Summary History: datos reales del dataset de ETF spot de EE.UU. para BTC, ETH y SOL. 'Demo' es el nombre del plan gratuito de acceso a la API, no un dataset ficticio.",
       },
     },
     {
@@ -280,7 +278,7 @@ async function loadSoSoValueFlows(asset: (typeof ETF_ASSETS)[number], apiKey: st
   const latest = recent7.at(-1)!;
   return {
     asset,
-    source: "SoSoValue Demo API",
+    source: "SoSoValue ETF API",
     available: true as const,
     date: latest.date,
     dailyFlowUsd: numberValue(latest.total_net_inflow),

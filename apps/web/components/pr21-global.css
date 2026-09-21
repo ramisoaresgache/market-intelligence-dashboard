@@ -1,8 +1,8 @@
 .exchange-analytics {
   display: grid;
-  gap: 12px;
-  margin-top: 14px;
-  padding-top: 16px;
+  gap: 14px;
+  margin-top: 16px;
+  padding-top: 18px;
   border-top: 1px solid var(--line);
 }
 .exchange-analytics-head,
@@ -13,34 +13,36 @@
   justify-content: space-between;
   gap: 14px;
 }
-.exchange-analytics-head h3 { margin: 5px 0 4px; }
-.exchange-filter { display: grid; gap: 5px; min-width: 180px; }
-.exchange-filter span { color: var(--muted); font-size: 8px; text-transform: uppercase; letter-spacing: .08em; }
+.exchange-analytics-head h3 { margin: 5px 0 5px; font-size: 19px; }
+.exchange-filter { display: grid; gap: 6px; min-width: 190px; }
+.exchange-filter:has(select option:only-child) { display: none; }
+.exchange-filter span { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
 .exchange-filter select {
   width: 100%;
   color: var(--text);
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 9px 10px;
+  padding: 10px 11px;
   outline: none;
+  font-size: 12px;
 }
 .exchange-chart-card,
 .exchange-table-wrap {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: rgba(0,0,0,.14);
-  padding: 14px;
+  padding: 16px;
   min-width: 0;
 }
 .exchange-chart-title,
-.exchange-table-head { margin-bottom: 10px; }
+.exchange-table-head { margin-bottom: 12px; }
 .exchange-chart-title strong,
-.exchange-table-head strong { font-size: 11px; }
+.exchange-table-head strong { font-size: 13px; }
 .exchange-chart-title span,
-.exchange-table-head span { color: var(--muted); font-size: 8px; }
+.exchange-table-head span { color: var(--muted); font-size: 10px; }
 .exchange-svg-wrap { width: 100%; overflow: hidden; }
-.exchange-svg-wrap svg { width: 100%; height: 260px; display: block; }
+.exchange-svg-wrap svg { width: 100%; height: 285px; display: block; }
 .chart-grid-lines line { stroke: rgba(117,128,145,.18); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .reserve-area { fill: url(#reserveFill); color: var(--green); }
 .reserve-line { fill: none; stroke: var(--green); stroke-width: 2; vector-effect: non-scaling-stroke; }
@@ -48,7 +50,7 @@
 .flow-zero { stroke: rgba(117,128,145,.35); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .flow-in { fill: var(--green); opacity: .78; }
 .flow-out { fill: var(--red); opacity: .78; }
-.chart-legend { display: flex; align-items: center; justify-content: center; gap: 7px; color: var(--muted); font-size: 8px; padding-top: 5px; }
+.chart-legend { display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: 10px; padding-top: 7px; }
 .chart-legend span { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 .reserve-dot, .flow-in-dot { background: var(--green); }
 .price-dot { background: var(--amber); margin-left: 8px; }
@@ -60,31 +62,31 @@
   gap: 10px;
   align-items: center;
   min-width: 760px;
-  padding: 9px 11px;
+  padding: 11px 12px;
   border-bottom: 1px solid rgba(32,41,54,.65);
-  font-size: 9px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 .exchange-balance-row:last-child { border-bottom: 0; }
-.exchange-balance-row strong { font-size: 10px; }
+.exchange-balance-row strong { font-size: 12px; }
 .exchange-balance-row b { font-weight: 700; }
 .exchange-balance-header {
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: .06em;
-  font-size: 8px;
+  font-size: 10px;
   background: rgba(0,0,0,.14);
 }
 .exchange-detail-note,
 .exchange-method-note {
   color: var(--muted);
-  font-size: 8px;
-  line-height: 1.5;
+  font-size: 10.5px;
+  line-height: 1.55;
 }
 .exchange-detail-note {
   border: 1px dashed var(--line);
   border-radius: 9px;
-  padding: 14px;
+  padding: 15px;
   text-align: center;
 }
 .exchange-method-note { margin: 0; }
@@ -94,11 +96,18 @@
   .exchange-chart-title,
   .exchange-table-head { flex-direction: column; }
   .exchange-filter { width: 100%; }
-  .exchange-svg-wrap svg { height: 220px; }
+  .exchange-svg-wrap svg { height: 235px; }
 }
 
 @media (max-width: 560px) {
   .exchange-chart-card,
-  .exchange-table-wrap { padding: 10px; }
-  .exchange-svg-wrap svg { height: 190px; }
+  .exchange-table-wrap { padding: 11px; }
+  .exchange-svg-wrap svg { height: 205px; }
+  .exchange-chart-title strong,
+  .exchange-table-head strong { font-size: 14px; }
+  .exchange-chart-title span,
+  .exchange-table-head span,
+  .chart-legend,
+  .exchange-detail-note,
+  .exchange-method-note { font-size: 11px; }
 }
