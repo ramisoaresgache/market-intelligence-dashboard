@@ -7,6 +7,7 @@ import {
   midpointFromBooks,
   type ExchangeFilter,
 } from "../lib/market/engine/aggregate";
+import { summarizeLiquidationWindows } from "../lib/market/liquidation-history";
 import type { LiquidationMapSource } from "../lib/market/liquidation-model";
 import { DEFAULT_SYMBOL } from "../lib/market/symbols";
 import {
@@ -18,6 +19,7 @@ import {
   type SourceStatus,
 } from "../lib/market/types";
 import { loadMarketUniverse } from "../lib/market/universe";
+import { useLiquidationHistory } from "../lib/market/use-liquidation-history";
 import { setMarketSymbol, useMarketEngine } from "../lib/market/use-market-engine";
 
 const compact = new Intl.NumberFormat("es-AR", {
@@ -50,6 +52,7 @@ export default function Dashboard() {
   const [exchangeFilter, setExchangeFilter] = useState<ExchangeFilter>("all");
   const [liquidationHours, setLiquidationHours] = useState<(typeof LIQUIDATION_HOURS)[number]>(24);
   const [liquidationSource, setLiquidationSource] = useState<LiquidationMapSource>("aggregate");
+  const [liquidationClock, setLiquidationClock] = useState(() => Date.now());
 
   useEffect(() => {
     let active = true;
@@ -64,6 +67,11 @@ export default function Dashboard() {
   useEffect(() => {
     setMarketSymbol(selectedSymbol);
   }, [selectedSymbol]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setLiquidationClock(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const snapshot = snapshots[selectedSymbol];
   const books = snapshot?.orderBooks ?? [];
@@ -82,12 +90,12 @@ export default function Dashboard() {
   );
   const referenceTop = useMemo(() => bestConsistentTop(books), [books]);
   const liquidations = snapshot?.liquidations ?? [];
-  const longLiquidations = liquidations
-    .filter((item) => item.side === "long")
-    .reduce((sum, item) => sum + item.notional, 0);
-  const shortLiquidations = liquidations
-    .filter((item) => item.side === "short")
-    .reduce((sum, item) => sum + item.notional, 0);
+  const liquidationHistory = useLiquidationHistory(selectedSymbol, liquidations);
+  const liquidationWindows = useMemo(
+    () => summarizeLiquidationWindows(liquidationHistory, liquidationClock),
+    [liquidationHistory, liquidationClock],
+  );
+  const liquidationHistoryStart = liquidationHistory[0]?.ts;
   const availableQuick = QUICK_SYMBOLS.filter((symbol) =>
     universe.length ? universe.some((market) => market.symbol === symbol) : true,
   );
@@ -269,21 +277,33 @@ export default function Dashboard() {
 
       <section className="liquidation-grid">
         <article className="panel liquidation-summary">
-          <span className="kicker">LIQUIDACIONES OBSERVADAS</span>
-          <h3>Eventos recibidos durante esta sesión</h3>
-          <div className="liquidation-totals">
-            <div>
-              <span>Largos liquidados</span>
-              <strong className="negative">{formatMoney(longLiquidations)}</strong>
-            </div>
-            <div>
-              <span>Cortos liquidados</span>
-              <strong className="positive">{formatMoney(shortLiquidations)}</strong>
-            </div>
+          <span className="kicker">LIQUIDACIONES OBSERVADAS · {selectedSymbol.replace("USDT", "")}</span>
+          <h3>Totales móviles por ventana</h3>
+          <div className="liquidation-window-grid">
+            {liquidationWindows.map((window) => (
+              <div className="liquidation-window-card" key={window.hours}>
+                <div className="liquidation-window-head">
+                  <span>{window.hours} h</span>
+                  <strong>{formatMoney(window.total)}</strong>
+                </div>
+                <div className="liquidation-window-row">
+                  <span>Largos</span>
+                  <b className="negative">{formatMoney(window.long)}</b>
+                </div>
+                <div className="liquidation-window-row">
+                  <span>Cortos</span>
+                  <b className="positive">{formatMoney(window.short)}</b>
+                </div>
+                <small>{window.events} eventos observados</small>
+              </div>
+            ))}
           </div>
           <p className="muted-note">
-            Esta sección muestra únicamente feeds públicos de liquidaciones observadas disponibles.
-            No todos los exchanges publican un canal global equivalente.
+            Historial local de hasta 24 h para el par seleccionado. Se conserva en este navegador;
+            si la pestaña estuvo cerrada o este par no estaba activo, puede haber huecos.
+            {liquidationHistoryStart
+              ? ` Datos disponibles desde ${formatDateTime(liquidationHistoryStart)}.`
+              : " El historial empieza a construirse con los próximos eventos."}
           </p>
         </article>
 
@@ -421,6 +441,16 @@ function formatTime(timestamp: number): string {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
+    hour12: false,
+  }).format(timestamp);
+}
+
+function formatDateTime(timestamp: number): string {
+  return new Intl.DateTimeFormat("es-AR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
     hour12: false,
   }).format(timestamp);
 }

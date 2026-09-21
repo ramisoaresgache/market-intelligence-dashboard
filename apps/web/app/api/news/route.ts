@@ -20,6 +20,22 @@ const GDELT_QUERY = [
   '"Treasury yields"',
 ].join(" OR ");
 const GDELT_URL = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(`(${GDELT_QUERY})`)}&mode=artlist&format=json&maxrecords=35&timespan=48h&sort=datedesc`;
+const GOOGLE_NEWS_QUERY = [
+  '"Federal Reserve"',
+  "FOMC",
+  "Powell",
+  "inflation",
+  "CPI",
+  "PCE",
+  "payrolls",
+  "unemployment",
+  "bitcoin",
+  "cryptocurrency",
+  "Nasdaq",
+  '"S&P 500"',
+].join(" OR ");
+const GOOGLE_NEWS_URL = `https://news.google.com/rss/search?q=${encodeURIComponent(`(${GOOGLE_NEWS_QUERY}) when:2d`)}&hl=en-US&gl=US&ceid=US:en`;
+const FETCH_TIMEOUT_MS = 8_000;
 
 const FED_FEEDS = [
   { id: "fed-monetary", label: "FED · Monetary Policy", url: "https://www.federalreserve.gov/feeds/press_monetary.xml" },
@@ -40,25 +56,59 @@ interface GdeltResponse {
 
 export async function GET() {
   const now = Date.now();
-  const [gdeltResult, ...feedResults] = await Promise.allSettled([
+  const [gdeltResult, googleResult, ...feedResults] = await Promise.allSettled([
     fetchJson<GdeltResponse>(GDELT_URL, 300),
+    fetchText(GOOGLE_NEWS_URL, 300),
     ...FED_FEEDS.map((feed) => fetchText(feed.url, 300)),
   ]);
 
   const items: NewsItem[] = [];
   const sources: SourceHealth[] = [];
 
+  let gdeltItems: NewsItem[] = [];
   if (gdeltResult.status === "fulfilled") {
-    items.push(...parseGdelt(gdeltResult.value));
-    sources.push({ id: "gdelt", label: "GDELT", status: "ok", detail: "Noticias globales · últimas 48 h" });
+    gdeltItems = parseGdelt(gdeltResult.value);
+    if (gdeltItems.length) {
+      items.push(...gdeltItems);
+      sources.push({ id: "gdelt", label: "GDELT", status: "ok", detail: "Noticias globales · últimas 48 h" });
+    } else {
+      sources.push({
+        id: "gdelt",
+        label: "GDELT",
+        status: "degraded",
+        detail: "La API respondió pero no devolvió artículos utilizables; se intenta el respaldo RSS.",
+      });
+    }
   } else {
     sources.push({ id: "gdelt", label: "GDELT", status: "degraded", detail: cleanError(gdeltResult.reason) });
+  }
+
+  if (!gdeltItems.length) {
+    if (googleResult.status === "fulfilled") {
+      const fallbackItems = parseGoogleNewsRss(googleResult.value);
+      items.push(...fallbackItems);
+      sources.push({
+        id: "google-news",
+        label: "Google News · respaldo",
+        status: fallbackItems.length ? "ok" : "degraded",
+        detail: fallbackItems.length
+          ? "Respaldo RSS para noticias globales cuando GDELT no responde"
+          : "El RSS respondió sin artículos utilizables",
+      });
+    } else {
+      sources.push({
+        id: "google-news",
+        label: "Google News · respaldo",
+        status: "degraded",
+        detail: cleanError(googleResult.reason),
+      });
+    }
   }
 
   FED_FEEDS.forEach((feed, index) => {
     const result = feedResults[index];
     if (result?.status === "fulfilled") {
-      items.push(...parseRss(result.value, feed.id === "fed-powell"));
+      items.push(...parseFedRss(result.value, feed.id === "fed-powell"));
       sources.push({ id: feed.id, label: feed.label, status: "ok", detail: "Fuente oficial Federal Reserve" });
     } else {
       sources.push({
@@ -83,8 +133,12 @@ export async function GET() {
 
 async function fetchText(url: string, revalidate: number): Promise<string> {
   const response = await fetch(url, {
-    headers: { "User-Agent": "MarketIntelligenceDashboard/1.0" },
+    headers: {
+      "User-Agent": "MarketIntelligenceDashboard/1.0",
+      Accept: "application/rss+xml,application/xml,text/xml,text/plain;q=0.9,*/*;q=0.8",
+    },
     next: { revalidate },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
   return response.text();
@@ -92,8 +146,12 @@ async function fetchText(url: string, revalidate: number): Promise<string> {
 
 async function fetchJson<T>(url: string, revalidate: number): Promise<T> {
   const response = await fetch(url, {
-    headers: { "User-Agent": "MarketIntelligenceDashboard/1.0" },
+    headers: {
+      "User-Agent": "MarketIntelligenceDashboard/1.0",
+      Accept: "application/json,text/plain;q=0.9,*/*;q=0.8",
+    },
     next: { revalidate },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
   return (await response.json()) as T;
@@ -123,7 +181,7 @@ function parseGdelt(payload: GdeltResponse): NewsItem[] {
   });
 }
 
-function parseRss(xml: string, powellFeed: boolean): NewsItem[] {
+function parseFedRss(xml: string, powellFeed: boolean): NewsItem[] {
   const blocks = xml.match(/<item[\s\S]*?<\/item>/gi) ?? [];
   return blocks.flatMap((block, index) => {
     const title = rssValue(block, "title");
@@ -144,6 +202,33 @@ function parseRss(xml: string, powellFeed: boolean): NewsItem[] {
         category: classifyNewsCategory(decoratedTitle, description),
         summary: description || null,
         official: true,
+      },
+    ];
+  });
+}
+
+function parseGoogleNewsRss(xml: string): NewsItem[] {
+  const blocks = xml.match(/<item[\s\S]*?<\/item>/gi) ?? [];
+  return blocks.flatMap((block, index) => {
+    const title = rssValue(block, "title");
+    const link = rssValue(block, "link");
+    const date = rssValue(block, "pubDate");
+    const source = rssValue(block, "source") ?? "Google News";
+    const description = stripHtml(rssValue(block, "description") ?? "");
+    const publishedAt = date ? Date.parse(date) : Number.NaN;
+    if (!title || !link || !Number.isFinite(publishedAt)) return [];
+
+    return [
+      {
+        id: `google-${publishedAt}-${index}-${simpleHash(link)}`,
+        title,
+        url: link,
+        publishedAt,
+        source,
+        impact: classifyNewsImpact(title, description),
+        category: classifyNewsCategory(title, description),
+        summary: null,
+        official: false,
       },
     ];
   });

@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 
 const FOREX_FACTORY_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json";
 const BLS_ICS_URL = "https://www.bls.gov/schedule/news_release/bls.ics";
-const BLS_SCHEDULE_URL = "https://www.bls.gov/schedule/";
+const BLS_SCHEDULE_URL = "https://www.bls.gov/schedule/2026/";
 const BEA_RELEASES_URL = "https://apps.bea.gov/API/signup/release_dates.json";
 const BEA_SCHEDULE_URL = "https://www.bea.gov/news/schedule";
 const FED_CALENDAR_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm";
@@ -20,6 +20,7 @@ const FOREX_FACTORY_CALENDAR_URL = "https://www.forexfactory.com/calendar";
 const DAY = 86_400_000;
 const EVENT_WINDOW_BEFORE = 3 * DAY;
 const EVENT_WINDOW_AFTER = 45 * DAY;
+const FETCH_TIMEOUT_MS = 8_000;
 
 interface ForexFactoryEvent {
   title?: unknown;
@@ -58,6 +59,19 @@ const FOMC_DECISIONS: Array<{ date: string; reference: string }> = [
   { date: "2027-12-08T14:00:00-05:00", reference: "Reunión 7-8 dic 2027" },
 ];
 
+const BLS_2026_FALLBACK = {
+  cpi: [
+    "2026-10-14T08:30:00-04:00",
+    "2026-11-10T08:30:00-05:00",
+    "2026-12-10T08:30:00-05:00",
+  ],
+  employment: [
+    "2026-10-02T08:30:00-04:00",
+    "2026-11-06T08:30:00-05:00",
+    "2026-12-04T08:30:00-05:00",
+  ],
+} as const;
+
 export async function GET() {
   const now = Date.now();
   const [blsResult, beaResult, forexResult] = await Promise.allSettled([
@@ -66,8 +80,22 @@ export async function GET() {
     fetchJson<ForexFactoryEvent[]>(FOREX_FACTORY_URL, 60),
   ]);
 
+  const blsUsingFallback = blsResult.status === "rejected";
   const sources: SourceHealth[] = [
-    healthFromResult("bls", "BLS", blsResult, "Calendario oficial de CPI y empleo"),
+    blsUsingFallback
+      ? {
+          id: "bls",
+          label: "BLS",
+          status: "degraded",
+          detail:
+            "El ICS de BLS rechazó la consulta serverless; se usa el calendario oficial 2026 integrado como respaldo para CPI y empleo.",
+        }
+      : {
+          id: "bls",
+          label: "BLS",
+          status: "ok",
+          detail: "Calendario oficial de CPI y empleo",
+        },
     healthFromResult("bea", "BEA", beaResult, "Calendario oficial de GDP y PCE"),
     {
       id: "fed",
@@ -79,13 +107,14 @@ export async function GET() {
       "expectations",
       "Forex Factory",
       forexResult,
-      "Consenso, anterior y dato real cuando está disponible",
+      "Consenso, anterior y dato real del export semanal. Eventos de semanas posteriores pueden aparecer sin consenso hasta que la fuente los publique.",
       "degraded",
     ),
   ];
 
   const official: OfficialSeed[] = [];
   if (blsResult.status === "fulfilled") official.push(...parseBlsCalendar(blsResult.value));
+  else official.push(...blsFallbackSeeds());
   if (beaResult.status === "fulfilled") official.push(...parseBeaCalendar(beaResult.value));
   official.push(...fomcSeeds());
 
@@ -111,8 +140,13 @@ export async function GET() {
 
 async function fetchText(url: string, revalidate: number): Promise<string> {
   const response = await fetch(url, {
-    headers: { "User-Agent": "MarketIntelligenceDashboard/1.0" },
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (compatible; MarketIntelligenceDashboard/1.0; +https://github.com/ramisoaresgache/market-intelligence-dashboard)",
+      Accept: "text/calendar,text/plain,text/html,application/xml;q=0.9,*/*;q=0.8",
+    },
     next: { revalidate },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
   return response.text();
@@ -120,8 +154,12 @@ async function fetchText(url: string, revalidate: number): Promise<string> {
 
 async function fetchJson<T>(url: string, revalidate: number): Promise<T> {
   const response = await fetch(url, {
-    headers: { "User-Agent": "MarketIntelligenceDashboard/1.0" },
+    headers: {
+      "User-Agent": "MarketIntelligenceDashboard/1.0",
+      Accept: "application/json,text/plain;q=0.9,*/*;q=0.8",
+    },
     next: { revalidate },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
   return (await response.json()) as T;
@@ -172,6 +210,36 @@ function parseBlsCalendar(ics: string): OfficialSeed[] {
   }
 
   return dedupeOfficial(events);
+}
+
+function blsFallbackSeeds(): OfficialSeed[] {
+  const events: OfficialSeed[] = [];
+
+  for (const date of BLS_2026_FALLBACK.cpi) {
+    const timestamp = Date.parse(date);
+    events.push(officialEvent("cpi", "CPI", timestamp, "BLS · calendario de respaldo", BLS_SCHEDULE_URL));
+    events.push(
+      officialEvent("core-cpi", "Core CPI", timestamp, "BLS · calendario de respaldo", BLS_SCHEDULE_URL),
+    );
+  }
+
+  for (const date of BLS_2026_FALLBACK.employment) {
+    const timestamp = Date.parse(date);
+    events.push(
+      officialEvent("nfp", "NFP · Nonfarm Payrolls", timestamp, "BLS · calendario de respaldo", BLS_SCHEDULE_URL),
+    );
+    events.push(
+      officialEvent(
+        "unemployment",
+        "Tasa de desempleo",
+        timestamp,
+        "BLS · calendario de respaldo",
+        BLS_SCHEDULE_URL,
+      ),
+    );
+  }
+
+  return events;
 }
 
 function icsValue(block: string, key: string): string | null {
