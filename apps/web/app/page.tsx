@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CoinGlassInsights } from "../components/coinglass-insights";
+import { CapitalFlows } from "../components/capital-flows";
 import { LiquidationHeatmap } from "../components/liquidation-heatmap";
 import { LiquidationSummary } from "../components/liquidation-summary";
 import { MarketPulse } from "../components/market-pulse";
@@ -323,7 +323,7 @@ export default function Dashboard() {
         </article>
       </section>
 
-      <CoinGlassInsights symbol={selectedSymbol} />
+      <CapitalFlows />
 
       <footer>
         <span>INTELIGENCIA DE MERCADO · SOLO LECTURA</span>

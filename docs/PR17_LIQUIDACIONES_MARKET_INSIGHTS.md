@@ -28,23 +28,38 @@ Cloudflare Durable Objects + SQLite mantiene buckets de un minuto y expone venta
 - Se agrega buscador de pares sobre el selector existente.
 - Los totales de liquidaciones indican si provienen del histórico central o del fallback local y muestran el aporte por exchange.
 
-## CoinGlass opcional
+## Flujos de capital con fuentes públicas
 
-Se agrega un adaptador server-side `/api/coinglass` preparado para:
+CoinGlass no es una dependencia del proyecto. Los enlaces compartidos se toman sólo como referencia funcional para decidir qué información mostrar.
 
-- histórico bid/ask de futuros;
-- flujos de ETF spot de Bitcoin;
-- balances de la moneda en exchanges.
+### BTC entrando y saliendo de exchanges
 
-La integración sólo consulta CoinGlass cuando existe `COINGLASS_API_KEY`. La clave nunca se envía al navegador. Sin clave, la UI muestra las capacidades disponibles pero no inventa valores ni scrapea endpoints privados.
+La ruta `/api/capital-flows` consulta Coin Metrics Community API sin API key y utiliza métricas diarias de BTC:
 
-Para reservas en exchanges la interfaz usa esa denominación explícita: no se presenta el balance agregado de exchanges como identificación de ballenas individuales.
+- `FlowInExUSD` / `FlowInExNtv`: entradas hacia direcciones identificadas como exchanges.
+- `FlowOutExUSD` / `FlowOutExNtv`: salidas desde exchanges.
+- `SplyExNtv` / `SplyExUSD`: reserva/supply identificado en exchanges cuando está disponible en Community.
+
+La UI muestra entradas, salidas, netflow diario, netflow de 7 días y reservas de BTC cuando la fuente las expone.
+
+Estas métricas dependen del etiquetado de direcciones de Coin Metrics y pueden revisarse históricamente cuando se identifican nuevas direcciones de exchanges.
+
+### ETF spot cripto
+
+La misma ruta consulta las páginas públicas de Farside Investors para:
+
+- ETF spot de BTC.
+- ETF spot de ETH.
+- ETF spot de SOL.
+
+El servidor extrae el total diario publicado y calcula acumulados de 5 y 7 jornadas. La interfaz mantiene la atribución explícita a Farside y, si cambia el formato de la página, muestra el error en lugar de fabricar datos.
+
+No se requiere API key ni plan pago para este módulo.
 
 ## Variables
 
 ```env
 LIQUIDATION_COLLECTOR_URL=https://market-intelligence-dashboard.godino290.workers.dev
-COINGLASS_API_KEY=
 ```
 
 ## Validación
