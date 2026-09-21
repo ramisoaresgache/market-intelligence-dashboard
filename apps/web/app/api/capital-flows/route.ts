@@ -7,21 +7,6 @@ const SOSOVALUE_BASE = "https://openapi.sosovalue.com/openapi/v1";
 const ETF_ASSETS = ["BTC", "ETH", "SOL"] as const;
 const HISTORY_DAYS = 370;
 
-const EXCHANGES = [
-  { id: "binance", name: "Binance", code: "BNB" },
-  { id: "coinbase", name: "Coinbase", code: "CBS" },
-  { id: "bitfinex", name: "Bitfinex", code: "BFX" },
-  { id: "kraken", name: "Kraken", code: "KRK" },
-  { id: "okx", name: "OKX", code: "OKX" },
-  { id: "gemini", name: "Gemini", code: "GEM" },
-  { id: "bybit", name: "Bybit", code: "BIT" },
-  { id: "gate", name: "Gate.io", code: "GIO" },
-  { id: "bitstamp", name: "Bitstamp", code: "BSP" },
-  { id: "kucoin", name: "KuCoin", code: "KCN" },
-  { id: "mexc", name: "MEXC", code: "MXC" },
-  { id: "bitmex", name: "BitMEX", code: "BMX" },
-] as const;
-
 type CoinMetricsRow = {
   time?: string;
   FlowInExUSD?: string;
@@ -31,7 +16,6 @@ type CoinMetricsRow = {
   SplyExNtv?: string;
   SplyExUSD?: string;
   PriceUSD?: string;
-  [metric: string]: string | undefined;
 };
 
 type ExchangeHistoryPoint = {
@@ -60,10 +44,10 @@ export async function GET() {
     : ETF_ASSETS.map((asset) =>
         Promise.resolve({
           asset,
-          source: "SoSoValue Demo API",
+          source: "SoSoValue",
           available: false as const,
           requiresConfig: true,
-          error: "Falta configurar SOSOVALUE_API_KEY (plan Demo gratuito).",
+          error: "Falta configurar SOSOVALUE_API_KEY.",
         }),
       );
 
@@ -77,10 +61,6 @@ export async function GET() {
       ? exchangeResult.value
       : (warnings.push(`Coin Metrics: ${errorMessage(exchangeResult.reason)}`), null);
 
-  if (bitcoinExchange?.exchangeDetailError) {
-    warnings.push(`Detalle por exchange: ${bitcoinExchange.exchangeDetailError}`);
-  }
-
   const etfs = ETF_ASSETS.map((asset, index) => {
     const result = etfResults[index];
     if (result.status === "fulfilled") return result.value;
@@ -88,7 +68,7 @@ export async function GET() {
     warnings.push(`${asset} ETF: ${message}`);
     return {
       asset,
-      source: "SoSoValue Demo API",
+      source: "SoSoValue",
       available: false as const,
       error: message,
     };
@@ -103,9 +83,9 @@ export async function GET() {
       etfProviderConfigured: Boolean(sosoApiKey),
       methodology: {
         exchangeFlows:
-          "Coin Metrics FlowIn/FlowOut: BTC enviado hacia o retirado desde direcciones identificadas como exchanges. Sply mide BTC retenido en wallets identificadas del exchange. Las cifras son estimaciones on-chain y pueden subestimar saldos reales si faltan direcciones por identificar.",
+          "Coin Metrics FlowInEx/FlowOutEx: movimientos diarios de BTC hacia/desde direcciones identificadas como exchanges. SplyEx mide el BTC agregado retenido en wallets de exchanges identificadas.",
         etfFlows:
-          "SoSoValue ETF Summary History: flujo neto diario agregado de ETF spot de EE.UU. para BTC, ETH y SOL. El plan Demo es gratuito y requiere una API key server-side.",
+          "SoSoValue ETF Summary History: datos reales publicados por su Market Data API. La cuenta usa acceso Demo gratuito, no datos simulados.",
       },
     },
     {
@@ -151,14 +131,6 @@ async function loadBitcoinExchangeFlows() {
   const inflowBtc = numberValue(latest.FlowInExNtv);
   const outflowBtc = numberValue(latest.FlowOutExNtv);
 
-  let exchanges: Awaited<ReturnType<typeof loadExchangeBreakdown>> = [];
-  let exchangeDetailError: string | null = null;
-  try {
-    exchanges = await loadExchangeBreakdown(start, history);
-  } catch (error) {
-    exchangeDetailError = errorMessage(error);
-  }
-
   return {
     available: true,
     source: "Coin Metrics Community API",
@@ -181,78 +153,7 @@ async function loadBitcoinExchangeFlows() {
       0,
     ),
     history,
-    exchanges,
-    exchangeDetailAvailable: exchanges.length > 0,
-    exchangeDetailError,
   };
-}
-
-async function loadExchangeBreakdown(start: string, aggregateHistory: ExchangeHistoryPoint[]) {
-  const metrics = EXCHANGES.flatMap((exchange) => [
-    `Sply${exchange.code}Ntv`,
-    `FlowIn${exchange.code}Ntv`,
-    `FlowOut${exchange.code}Ntv`,
-  ]);
-  const params = new URLSearchParams({
-    assets: "btc",
-    metrics: metrics.join(","),
-    frequency: "1d",
-    start_time: start,
-    page_size: "1000",
-  });
-
-  const response = await fetch(`${COINMETRICS_BASE}/timeseries/asset-metrics?${params}`, {
-    headers: { Accept: "application/json" },
-    next: { revalidate: 900 },
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`.trim());
-
-  const payload = (await response.json()) as { data?: CoinMetricsRow[] };
-  const rows = sortRows(payload.data ?? []);
-  if (!rows.length) return [];
-
-  const priceByDate = new Map(aggregateHistory.map((point) => [point.date, point.priceUsd]));
-
-  return EXCHANGES.flatMap((exchange) => {
-    const reserveKey = `Sply${exchange.code}Ntv`;
-    const inflowKey = `FlowIn${exchange.code}Ntv`;
-    const outflowKey = `FlowOut${exchange.code}Ntv`;
-    const history = rows
-      .map((row) => ({
-        date: row.time!,
-        reserveBtc: nullableNumber(row[reserveKey]),
-        inflowBtc: nullableNumber(row[inflowKey]),
-        outflowBtc: nullableNumber(row[outflowKey]),
-        priceUsd: priceByDate.get(row.time!) ?? null,
-      }))
-      .filter((point) => point.reserveBtc != null || point.inflowBtc != null || point.outflowBtc != null);
-
-    const latest = [...history].reverse().find((point) => point.reserveBtc != null);
-    if (!latest?.reserveBtc) return [];
-
-    return [
-      {
-        id: exchange.id,
-        name: exchange.name,
-        balanceBtc: latest.reserveBtc,
-        change1dBtc: changeFrom(history, 1),
-        change7dBtc: changeFrom(history, 7),
-        change30dBtc: changeFrom(history, 30),
-        inflowBtc: latest.inflowBtc,
-        outflowBtc: latest.outflowBtc,
-        history,
-      },
-    ];
-  }).sort((a, b) => b.balanceBtc - a.balanceBtc);
-}
-
-function changeFrom(history: ExchangeHistoryPoint[], days: number): number | null {
-  const balances = history.filter((point) => point.reserveBtc != null);
-  if (balances.length <= days) return null;
-  const latest = balances.at(-1)?.reserveBtc;
-  const previous = balances.at(-(days + 1))?.reserveBtc;
-  if (latest == null || previous == null) return null;
-  return latest - previous;
 }
 
 async function loadSoSoValueFlows(asset: (typeof ETF_ASSETS)[number], apiKey: string) {
@@ -280,7 +181,7 @@ async function loadSoSoValueFlows(asset: (typeof ETF_ASSETS)[number], apiKey: st
   const latest = recent7.at(-1)!;
   return {
     asset,
-    source: "SoSoValue Demo API",
+    source: "SoSoValue",
     available: true as const,
     date: latest.date,
     dailyFlowUsd: numberValue(latest.total_net_inflow),
