@@ -1,7 +1,12 @@
 /// <reference lib="webworker" />
 
 import { BinanceAdapter } from "../lib/market/adapters/binance";
+import { BingxAdapter } from "../lib/market/adapters/bingx";
+import { BitunixAdapter } from "../lib/market/adapters/bitunix";
 import { BybitAdapter } from "../lib/market/adapters/bybit";
+import { MexcAdapter } from "../lib/market/adapters/mexc";
+import { OkxAdapter } from "../lib/market/adapters/okx";
+import { WhitebitAdapter } from "../lib/market/adapters/whitebit";
 import type { MarketAdapter } from "../lib/market/adapters/base";
 import { CoalescedPublisher, MarketStore } from "../lib/market/engine/store";
 import { DEFAULT_SYMBOL, normalizeSymbol } from "../lib/market/symbols";
@@ -28,7 +33,15 @@ function start(symbol: string): void {
   stopAdapters();
   activeSymbol = normalized;
   store = new MarketStore([activeSymbol]);
-  adapters = [new BinanceAdapter(receive, activeSymbol), new BybitAdapter(receive, activeSymbol)];
+  adapters = [
+    new BinanceAdapter(receive, activeSymbol),
+    new BybitAdapter(receive, activeSymbol),
+    new OkxAdapter(receive, activeSymbol),
+    new MexcAdapter(receive, activeSymbol),
+    new WhitebitAdapter(receive, activeSymbol),
+    new BingxAdapter(receive, activeSymbol),
+    new BitunixAdapter(receive, activeSymbol),
+  ];
   for (const adapter of adapters) adapter.start();
   publisher.markDirty();
 }
