@@ -21,10 +21,14 @@ type EtfFlow = {
   asset: string;
   source: string;
   available: boolean;
+  requiresConfig?: boolean;
   date?: string;
   dailyFlowUsd?: number;
   fiveDayFlowUsd?: number;
   sevenDayFlowUsd?: number;
+  netAssetsUsd?: number | null;
+  cumulativeFlowUsd?: number | null;
+  valueTradedUsd?: number | null;
   error?: string;
 };
 
@@ -32,6 +36,7 @@ type CapitalFlowsPayload = {
   generatedAt: number;
   bitcoinExchange: BitcoinExchangeFlow | null;
   etfs: EtfFlow[];
+  etfProviderConfigured?: boolean;
   warnings?: string[];
 };
 
@@ -73,7 +78,8 @@ export function CapitalFlows() {
           <span className="kicker">FLUJOS DE CAPITAL · FUENTES PÚBLICAS</span>
           <h3>BTC en exchanges y ETF spot cripto</h3>
           <p className="muted-note">
-            Datos descriptivos de movimiento de capital. No dependen de CoinGlass ni requieren una API paga.
+            Movimientos descriptivos de capital. Coin Metrics cubre flows de BTC hacia/desde exchanges y
+            SoSoValue aporta el histórico agregado de ETF spot.
           </p>
         </div>
         <span className="history-source central">SIN COINGLASS</span>
@@ -123,7 +129,7 @@ export function CapitalFlows() {
             <article className="insight-card capital-flow-card" key={asset}>
               <div className="insight-card-head">
                 <strong>ETF spot {asset}</strong>
-                <span>Farside · US$m</span>
+                <span>{item?.source ?? "SoSoValue"} · USD</span>
               </div>
               {item?.available ? (
                 <>
@@ -143,6 +149,9 @@ export function CapitalFlows() {
                     value={formatSignedMoney(item.sevenDayFlowUsd)}
                     tone={(item.sevenDayFlowUsd ?? 0) >= 0 ? "positive" : "negative"}
                   />
+                  {item.netAssetsUsd != null ? (
+                    <MetricRow label="Activos netos" value={formatMoney(item.netAssetsUsd)} />
+                  ) : null}
                   <small className="insight-note">
                     Último dato publicado: {item.date ?? "—"}. Los ETF sólo actualizan en jornadas de mercado.
                   </small>
