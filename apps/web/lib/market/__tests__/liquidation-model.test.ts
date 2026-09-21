@@ -41,6 +41,21 @@ describe("modelo de liquidaciones estimadas", () => {
     expect(zones.every((zone) => zone.exposureUsd > 0)).toBe(true);
   });
 
+  it("no agrega exposición repetida sólo porque exista volumen si el OI no crece", () => {
+    const zones = estimateLiquidationZones(
+      candles,
+      [
+        { ts: 0, openInterestUsd: 10_000_000 },
+        { ts: 300_000, openInterestUsd: 10_000_000 },
+        { ts: 600_000, openInterestUsd: 10_000_000 },
+      ],
+      "binance",
+    );
+
+    expect(zones.length).toBeGreaterThan(0);
+    expect(zones.every((zone) => zone.startTs === 0)).toBe(true);
+  });
+
   it("fusiona velas de exchanges por timestamp", () => {
     const merged = mergeCandles([
       candles.slice(0, 1),
