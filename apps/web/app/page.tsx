@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { CoinGlassInsights } from "../components/coinglass-insights";
 import { LiquidationHeatmap } from "../components/liquidation-heatmap";
+import { LiquidationSummary } from "../components/liquidation-summary";
+import { MarketPulse } from "../components/market-pulse";
 import {
   aggregateOrderBooks,
   midpointFromBooks,
   type ExchangeFilter,
 } from "../lib/market/engine/aggregate";
-import { summarizeLiquidationWindows } from "../lib/market/liquidation-history";
 import type { LiquidationMapSource } from "../lib/market/liquidation-model";
 import { DEFAULT_SYMBOL } from "../lib/market/symbols";
 import {
@@ -15,11 +17,9 @@ import {
   type AggregatedOrderLevel,
   type Exchange,
   type MarketInstrument,
-  type NormalizedOrderBook,
   type SourceStatus,
 } from "../lib/market/types";
 import { loadMarketUniverse } from "../lib/market/universe";
-import { useLiquidationHistory } from "../lib/market/use-liquidation-history";
 import { setMarketSymbol, useMarketEngine } from "../lib/market/use-market-engine";
 
 const compact = new Intl.NumberFormat("es-AR", {
@@ -49,10 +49,10 @@ export default function Dashboard() {
   const { snapshots, sources } = useMarketEngine();
   const [universe, setUniverse] = useState<MarketInstrument[]>([]);
   const [selectedSymbol, setSelectedSymbol] = useState(DEFAULT_SYMBOL);
+  const [marketSearch, setMarketSearch] = useState("");
   const [exchangeFilter, setExchangeFilter] = useState<ExchangeFilter>("all");
   const [liquidationHours, setLiquidationHours] = useState<(typeof LIQUIDATION_HOURS)[number]>(24);
   const [liquidationSource, setLiquidationSource] = useState<LiquidationMapSource>("aggregate");
-  const [liquidationClock, setLiquidationClock] = useState(() => Date.now());
 
   useEffect(() => {
     let active = true;
@@ -67,11 +67,6 @@ export default function Dashboard() {
   useEffect(() => {
     setMarketSymbol(selectedSymbol);
   }, [selectedSymbol]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setLiquidationClock(Date.now()), 30_000);
-    return () => window.clearInterval(timer);
-  }, []);
 
   const snapshot = snapshots[selectedSymbol];
   const books = snapshot?.orderBooks ?? [];
@@ -88,20 +83,31 @@ export default function Dashboard() {
     () => aggregateOrderBooks(books, exchangeFilter, undefined, 24),
     [books, exchangeFilter],
   );
-  const referenceTop = useMemo(() => bestConsistentTop(books), [books]);
   const liquidations = snapshot?.liquidations ?? [];
-  const liquidationHistory = useLiquidationHistory(selectedSymbol, liquidations);
-  const liquidationWindows = useMemo(
-    () => summarizeLiquidationWindows(liquidationHistory, liquidationClock),
-    [liquidationHistory, liquidationClock],
-  );
-  const liquidationHistoryStart = liquidationHistory[0]?.ts;
   const availableQuick = QUICK_SYMBOLS.filter((symbol) =>
     universe.length ? universe.some((market) => market.symbol === symbol) : true,
   );
   const displayedMarkets: MarketInstrument[] = universe.length
     ? universe
     : [{ symbol: DEFAULT_SYMBOL, baseCoin: "BTC", quoteCoin: "USDT", exchanges: [...LIVE_EXCHANGES] }];
+  const normalizedSearch = marketSearch.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const filteredMarkets = normalizedSearch
+    ? displayedMarkets.filter(
+        (market) => market.symbol.includes(normalizedSearch) || market.baseCoin.includes(normalizedSearch),
+      )
+    : displayedMarkets;
+  const selectedMarket = displayedMarkets.find((market) => market.symbol === selectedSymbol);
+  const pickerMarkets =
+    selectedMarket && !filteredMarkets.some((market) => market.symbol === selectedSymbol)
+      ? [selectedMarket, ...filteredMarkets]
+      : filteredMarkets;
+
+  function selectFirstSearchResult() {
+    const first = filteredMarkets[0];
+    if (!first) return;
+    setSelectedSymbol(first.symbol);
+    setMarketSearch("");
+  }
 
   return (
     <main>
@@ -135,13 +141,27 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="market-picker">
+          <label htmlFor="market-search">Buscar par</label>
+          <input
+            id="market-search"
+            type="search"
+            value={marketSearch}
+            placeholder="BTC, ETH, SOL…"
+            onChange={(event) => setMarketSearch(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") selectFirstSearchResult();
+            }}
+          />
           <label htmlFor="market-select">Par</label>
           <select
             id="market-select"
             value={selectedSymbol}
-            onChange={(event) => setSelectedSymbol(event.target.value)}
+            onChange={(event) => {
+              setSelectedSymbol(event.target.value);
+              setMarketSearch("");
+            }}
           >
-            {displayedMarkets.map((market) => (
+            {pickerMarkets.map((market) => (
               <option key={market.symbol} value={market.symbol}>
                 {market.baseCoin}/USDT
               </option>
@@ -149,7 +169,7 @@ export default function Dashboard() {
           </select>
           <small>
             {universe.length
-              ? `${universe.length} mercados detectados`
+              ? `${filteredMarkets.length} de ${universe.length} mercados`
               : "Cargando mercados disponibles…"}
           </small>
         </div>
@@ -161,7 +181,10 @@ export default function Dashboard() {
             key={symbol}
             type="button"
             className={selectedSymbol === symbol ? "active" : ""}
-            onClick={() => setSelectedSymbol(symbol)}
+            onClick={() => {
+              setSelectedSymbol(symbol);
+              setMarketSearch("");
+            }}
           >
             {symbol.replace("USDT", "")}
           </button>
@@ -184,21 +207,7 @@ export default function Dashboard() {
           <strong>{currentPrice == null ? "—" : `$${formatPrice(currentPrice)}`}</strong>
           <small>{snapshot?.ts ? `Actualizado ${formatTime(snapshot.ts)}` : "Esperando datos…"}</small>
         </div>
-        <div className="summary-strip">
-          <Metric label="Mejor compra de referencia" value={formatPrice(referenceTop?.bid)} tone="positive" />
-          <Metric label="Mejor venta de referencia" value={formatPrice(referenceTop?.ask)} tone="negative" />
-          <Metric
-            label={referenceTop ? `Spread · ${EXCHANGE_LABELS[referenceTop.exchange]}` : "Spread"}
-            value={formatPrice(referenceTop?.spread)}
-          />
-          <Metric label="Interés abierto Bybit (USD)" value={formatMoney(bybit?.openInterestValue)} />
-          <Metric label="Interés abierto Binance (USD)" value={formatMoney(binance?.openInterestValue)} />
-          <Metric
-            label="Tasa de financiación"
-            value={formatFunding(bybit?.fundingRate ?? okx?.fundingRate)}
-            tone={fundingTone(bybit?.fundingRate ?? okx?.fundingRate)}
-          />
-        </div>
+        <MarketPulse symbol={selectedSymbol} currentPrice={currentPrice} />
       </section>
 
       <section className="dashboard-grid">
@@ -276,36 +285,7 @@ export default function Dashboard() {
       </section>
 
       <section className="liquidation-grid">
-        <article className="panel liquidation-summary">
-          <span className="kicker">LIQUIDACIONES OBSERVADAS · {selectedSymbol.replace("USDT", "")}</span>
-          <h3>Totales móviles por ventana</h3>
-          <div className="liquidation-window-grid">
-            {liquidationWindows.map((window) => (
-              <div className="liquidation-window-card" key={window.hours}>
-                <div className="liquidation-window-head">
-                  <span>{window.hours} h</span>
-                  <strong>{formatMoney(window.total)}</strong>
-                </div>
-                <div className="liquidation-window-row">
-                  <span>Largos</span>
-                  <b className="negative">{formatMoney(window.long)}</b>
-                </div>
-                <div className="liquidation-window-row">
-                  <span>Cortos</span>
-                  <b className="positive">{formatMoney(window.short)}</b>
-                </div>
-                <small>{window.events} eventos observados</small>
-              </div>
-            ))}
-          </div>
-          <p className="muted-note">
-            Historial local de hasta 24 h para el par seleccionado. Se conserva en este navegador;
-            si la pestaña estuvo cerrada o este par no estaba activo, puede haber huecos.
-            {liquidationHistoryStart
-              ? ` Datos disponibles desde ${formatDateTime(liquidationHistoryStart)}.`
-              : " El historial empieza a construirse con los próximos eventos."}
-          </p>
-        </article>
+        <LiquidationSummary symbol={selectedSymbol} liquidations={liquidations} />
 
         <article className="panel recent-liquidations">
           <div className="panel-head compact-head">
@@ -342,6 +322,8 @@ export default function Dashboard() {
           </div>
         </article>
       </section>
+
+      <CoinGlassInsights symbol={selectedSymbol} />
 
       <footer>
         <span>INTELIGENCIA DE MERCADO · SOLO LECTURA</span>
@@ -385,30 +367,6 @@ function OrderSide({
   );
 }
 
-function Metric({ label, value, tone = "" }: { label: string; value: string; tone?: string }) {
-  return (
-    <div className="metric">
-      <span>{label}</span>
-      <b className={tone}>{value}</b>
-    </div>
-  );
-}
-
-function bestConsistentTop(
-  books: NormalizedOrderBook[],
-): { exchange: Exchange; bid: number; ask: number; spread: number } | null {
-  const candidates = books.flatMap((book) => {
-    const bid = book.bids[0]?.price;
-    const ask = book.asks[0]?.price;
-    if (bid == null || ask == null || !Number.isFinite(bid) || !Number.isFinite(ask) || ask < bid) {
-      return [];
-    }
-    return [{ exchange: book.exchange, bid, ask, spread: ask - bid }];
-  });
-  if (!candidates.length) return null;
-  return candidates.reduce((best, item) => (item.spread < best.spread ? item : best));
-}
-
 function connectionLabel(source: SourceStatus): string {
   if (source.state === "live") return "en vivo";
   if (source.state === "reconnecting") return "reconectando";
@@ -427,30 +385,11 @@ function formatPrice(value?: number | null): string {
   return value.toLocaleString("es-AR", { maximumFractionDigits: decimals });
 }
 
-function formatFunding(value?: number | null): string {
-  return value == null ? "—" : `${(value * 100).toFixed(4)}%`;
-}
-
-function fundingTone(value?: number | null): string {
-  if (value == null || value === 0) return "";
-  return value > 0 ? "positive" : "negative";
-}
-
 function formatTime(timestamp: number): string {
   return new Intl.DateTimeFormat("es-AR", {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    hour12: false,
-  }).format(timestamp);
-}
-
-function formatDateTime(timestamp: number): string {
-  return new Intl.DateTimeFormat("es-AR", {
-    day: "2-digit",
-    month: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
     hour12: false,
   }).format(timestamp);
 }

@@ -1,34 +1,24 @@
 import { DurableObject } from "cloudflare:workers";
 
-const BINANCE_REST_PING = "https://fapi.binance.com/fapi/v1/ping";
 const BINANCE_ENDPOINTS = [
-  {
-    id: "market-dynamic",
-    url: "https://fstream.binance.com/market/ws",
-    subscribe: true,
-  },
-  {
-    id: "market-stream",
-    url: "https://fstream.binance.com/market/stream?streams=!forceOrder@arr",
-    subscribe: false,
-  },
-  {
-    id: "market-raw",
-    url: "https://fstream.binance.com/market/ws/!forceOrder@arr",
-    subscribe: false,
-  },
+  { id: "market-dynamic", url: "https://fstream.binance.com/market/ws" },
+  { id: "market-stream", url: "https://fstream.binance.com/market/stream?streams=!forceOrder@arr" },
+  { id: "market-raw", url: "https://fstream.binance.com/market/ws/!forceOrder@arr" },
 ] as const;
 const BYBIT_WS = "wss://stream.bybit.com/v5/public/linear";
+const BITMEX_WS = "wss://ws.bitmex.com/realtime?subscribe=liquidation";
+const GATE_WS = "wss://fx-ws.gateio.ws/v4/ws/usdt";
+const GATE_API = "https://api.gateio.ws/api/v4";
 const BUCKET_MS = 60_000;
 const ALARM_MS = 60_000;
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-const BYBIT_PING_MS = 20_000;
-const BINANCE_REST_CHECK_MS = 5 * 60_000;
+const HEARTBEAT_MS = 20_000;
 const DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT"];
 const WINDOWS = [1, 4, 12, 24] as const;
 
 type Side = "long" | "short";
-type Exchange = "binance" | "bybit";
+type ActiveExchange = "bybit" | "bitmex" | "gate";
+type ExchangeKey = "binance" | ActiveExchange;
 
 type Env = {
   LIQUIDATION_COLLECTOR: DurableObjectNamespace;
@@ -37,7 +27,7 @@ type Env = {
 };
 
 type Liquidation = {
-  exchange: Exchange;
+  exchange: ActiveExchange;
   symbol: string;
   ts: number;
   side: Side;
@@ -47,7 +37,7 @@ type Liquidation = {
 };
 
 type PendingBucket = {
-  exchange: Exchange;
+  exchange: ActiveExchange;
   symbol: string;
   bucketTs: number;
   longUsd: number;
@@ -56,7 +46,7 @@ type PendingBucket = {
 };
 
 type BucketRow = {
-  exchange: Exchange;
+  exchange: string;
   symbol: string;
   bucket_ts: number;
   long_usd: number;
@@ -65,6 +55,8 @@ type BucketRow = {
 };
 
 type ExchangeState = {
+  enabled: boolean;
+  detail: string | null;
   connected: boolean;
   connecting: boolean;
   endpoint: string | null;
@@ -120,18 +112,26 @@ export class LiquidationCollector extends DurableObject<Env> {
   private readonly symbols: Set<string>;
   private readonly pending = new Map<string, PendingBucket>();
   private readonly fingerprints = new Map<string, number>();
-  private readonly sockets = new Map<Exchange, WebSocket>();
-  private readonly exchangeState = new Map<Exchange, ExchangeState>();
-  private bybitHeartbeat: ReturnType<typeof setInterval> | null = null;
-  private binanceEndpointIndex = 0;
+  private readonly sockets = new Map<ActiveExchange, WebSocket>();
+  private readonly exchangeState = new Map<ExchangeKey, ExchangeState>();
+  private readonly heartbeats = new Map<ActiveExchange, ReturnType<typeof setInterval>>();
+  private readonly gateMultipliers = new Map<string, number>();
+  private gateMultiplierLoad: Promise<void> | null = null;
   private flushing = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
     this.symbols = new Set(parseSymbols(env.COLLECTOR_SYMBOLS));
-    this.exchangeState.set("binance", freshExchangeState());
+
+    const binance = freshExchangeState(false);
+    binance.endpoint = "disabled";
+    binance.detail =
+      "Desactivado para recolección activa: Binance devolvió HTTP 403 desde el collector y probes de Western Europe, Asia-Pacific y Western North America.";
+    this.exchangeState.set("binance", binance);
     this.exchangeState.set("bybit", freshExchangeState());
+    this.exchangeState.set("bitmex", freshExchangeState());
+    this.exchangeState.set("gate", freshExchangeState());
 
     ctx.blockConcurrencyWhile(async () => {
       this.initializeSchema();
@@ -148,6 +148,7 @@ export class LiquidationCollector extends DurableObject<Env> {
         ok: true,
         message: "Collector inicializado",
         symbols: [...this.symbols],
+        activeExchanges: ["bybit", "gate", "bitmex"],
         exchanges: this.serializedExchangeState(),
       });
     }
@@ -157,6 +158,7 @@ export class LiquidationCollector extends DurableObject<Env> {
         ok: true,
         generatedAt: Date.now(),
         symbols: [...this.symbols],
+        activeExchanges: ["bybit", "gate", "bitmex"],
         pendingBuckets: this.pending.size,
         exchanges: this.serializedExchangeState(),
         storage: this.storageStats(),
@@ -166,8 +168,9 @@ export class LiquidationCollector extends DurableObject<Env> {
     if (url.pathname === "/v1/diagnostics/binance") {
       return Response.json({
         generatedAt: Date.now(),
-        endpointIndex: this.binanceEndpointIndex,
-        endpointCandidates: BINANCE_ENDPOINTS.map((endpoint) => ({ id: endpoint.id, url: endpoint.url })),
+        collectionEnabled: false,
+        reason: this.exchangeState.get("binance")?.detail,
+        endpointCandidates: BINANCE_ENDPOINTS,
         state: this.exchangeState.get("binance"),
       });
     }
@@ -223,169 +226,117 @@ export class LiquidationCollector extends DurableObject<Env> {
   }
 
   private async ensureConnections(): Promise<void> {
-    await this.ensureBinance();
     this.ensureBybit();
+    this.ensureBitmex();
+    await this.ensureGate();
     await this.scheduleAlarm();
   }
 
-  private async ensureBinance(): Promise<void> {
-    const current = this.sockets.get("binance");
-    if (current && (current.readyState === WebSocket.OPEN || current.readyState === WebSocket.CONNECTING)) return;
-
-    const state = this.exchangeState.get("binance")!;
-    if (state.connecting) return;
-
-    state.connecting = true;
-    state.connected = false;
-    state.transport = "fetch-upgrade";
-
-    await this.refreshBinanceRestDiagnostic(state);
-
-    const endpoint = BINANCE_ENDPOINTS[this.binanceEndpointIndex];
-    state.endpoint = endpoint.id;
-    state.lastHandshakeAt = Date.now();
-    state.handshakeStatus = null;
-    state.handshakeStatusText = null;
-    state.handshakeBody = null;
-    state.closeCode = null;
-    state.closeReason = null;
-
-    try {
-      const response = await fetch(endpoint.url, {
-        headers: {
-          Upgrade: "websocket",
-        },
-      });
-
-      state.handshakeStatus = response.status;
-      state.handshakeStatusText = response.statusText || null;
-
-      const socket = response.webSocket;
-      if (!socket) {
-        state.handshakeBody = await responseSnippet(response);
-        state.lastError = `Binance rechazó ${endpoint.id}: HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
-        state.connecting = false;
-        state.lastClosedAt = Date.now();
-        state.reconnects += 1;
-        this.rotateBinanceEndpoint();
-        await this.scheduleReconnect();
-        return;
-      }
-
-      socket.accept();
-      this.sockets.set("binance", socket);
-      state.connected = true;
-      state.connecting = false;
-      state.lastOpenedAt = Date.now();
-      state.lastError = null;
-
-      socket.addEventListener("message", (event) => {
-        try {
-          const liquidations = parseBinanceLiquidations(event.data);
-          for (const liquidation of liquidations) this.record(liquidation);
-          state.lastMessageAt = Date.now();
-          if (liquidations.length > 0) {
-            state.lastLiquidationAt = Math.max(...liquidations.map((liquidation) => liquidation.ts));
-          }
-          state.connected = true;
-        } catch (error) {
-          state.lastError = errorMessage(error);
-        }
-      });
-
-      socket.addEventListener("error", () => {
-        state.lastError = `Error de WebSocket Binance (${endpoint.id}, fetch-upgrade)`;
-      });
-
-      socket.addEventListener("close", (event) => {
-        if (this.sockets.get("binance") === socket) this.sockets.delete("binance");
-        state.connected = false;
-        state.connecting = false;
-        state.lastClosedAt = Date.now();
-        state.closeCode = event.code;
-        state.closeReason = event.reason || null;
-        state.lastError = `Binance cerró ${endpoint.id} (code ${event.code}${event.reason ? `: ${event.reason}` : ""})`;
-        state.reconnects += 1;
-        this.rotateBinanceEndpoint();
-        this.ctx.waitUntil(this.scheduleReconnect());
-      });
-
-      if (endpoint.subscribe) {
-        socket.send(
-          JSON.stringify({
-            method: "SUBSCRIBE",
-            params: ["!forceOrder@arr"],
-            id: 1,
-          }),
-        );
-      }
-    } catch (error) {
-      state.connecting = false;
-      state.connected = false;
-      state.lastClosedAt = Date.now();
-      state.lastError = `Handshake Binance ${endpoint.id}: ${errorMessage(error)}`;
-      state.reconnects += 1;
-      this.rotateBinanceEndpoint();
-      await this.scheduleReconnect();
-    }
-  }
-
-  private async refreshBinanceRestDiagnostic(state: ExchangeState): Promise<void> {
-    const now = Date.now();
-    if (state.lastRestCheckAt && now - state.lastRestCheckAt < BINANCE_REST_CHECK_MS) return;
-
-    state.lastRestCheckAt = now;
-    state.restError = null;
-
-    try {
-      const response = await fetch(BINANCE_REST_PING, { method: "GET" });
-      state.restReachable = true;
-      state.restStatus = response.status;
-      state.restStatusText = response.statusText || null;
-      if (!response.ok) state.restError = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
-    } catch (error) {
-      state.restReachable = false;
-      state.restStatus = null;
-      state.restStatusText = null;
-      state.restError = errorMessage(error);
-    }
-  }
-
-  private rotateBinanceEndpoint(): void {
-    this.binanceEndpointIndex = (this.binanceEndpointIndex + 1) % BINANCE_ENDPOINTS.length;
-  }
-
   private ensureBybit(): void {
-    const current = this.sockets.get("bybit");
-    if (current && (current.readyState === WebSocket.OPEN || current.readyState === WebSocket.CONNECTING)) return;
-
+    if (!this.canConnect("bybit")) return;
     const state = this.exchangeState.get("bybit")!;
     state.connecting = true;
-    state.connected = false;
     state.endpoint = "linear";
     state.transport = "constructor";
-    const socket = new WebSocket(BYBIT_WS);
-    this.sockets.set("bybit", socket);
 
-    socket.addEventListener("open", () => {
+    const socket = new WebSocket(BYBIT_WS);
+    this.attachSocket("bybit", socket, () => {
       socket.send(
         JSON.stringify({
           op: "subscribe",
           args: [...this.symbols].map((symbol) => `allLiquidation.${symbol}`),
         }),
       );
+      this.startHeartbeat("bybit", socket, () => JSON.stringify({ op: "ping" }));
+    }, (raw) => parseBybitLiquidations(raw));
+  }
+
+  private ensureBitmex(): void {
+    if (!this.canConnect("bitmex")) return;
+    const state = this.exchangeState.get("bitmex")!;
+    state.connecting = true;
+    state.endpoint = "liquidation";
+    state.transport = "constructor";
+
+    const socket = new WebSocket(BITMEX_WS);
+    this.attachSocket("bitmex", socket, undefined, (raw) => parseBitmexLiquidations(raw));
+  }
+
+  private async ensureGate(): Promise<void> {
+    if (!this.canConnect("gate")) return;
+    const state = this.exchangeState.get("gate")!;
+    state.connecting = true;
+    state.endpoint = "futures.public_liquidates";
+    state.transport = "constructor";
+
+    try {
+      await this.ensureGateMultipliers();
+      if (!this.gateMultipliers.size) {
+        state.connecting = false;
+        state.lastError = "Gate: no se pudieron cargar multiplicadores de contratos";
+        state.reconnects += 1;
+        await this.scheduleReconnect();
+        return;
+      }
+
+      const socket = new WebSocket(GATE_WS);
+      this.attachSocket(
+        "gate",
+        socket,
+        () => {
+          socket.send(
+            JSON.stringify({
+              time: Math.floor(Date.now() / 1000),
+              channel: "futures.public_liquidates",
+              event: "subscribe",
+              payload: ["!all"],
+            }),
+          );
+          this.startHeartbeat("gate", socket, () =>
+            JSON.stringify({ time: Math.floor(Date.now() / 1000), channel: "futures.ping" }),
+          );
+        },
+        (raw) => parseGateLiquidations(raw, this.gateMultipliers),
+      );
+    } catch (error) {
+      state.connecting = false;
+      state.connected = false;
+      state.lastError = `Gate: ${errorMessage(error)}`;
+      state.reconnects += 1;
+      await this.scheduleReconnect();
+    }
+  }
+
+  private canConnect(exchange: ActiveExchange): boolean {
+    const socket = this.sockets.get(exchange);
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return false;
+    return !this.exchangeState.get(exchange)?.connecting;
+  }
+
+  private attachSocket(
+    exchange: ActiveExchange,
+    socket: WebSocket,
+    onOpen: (() => void) | undefined,
+    parse: (raw: unknown) => Liquidation[],
+  ): void {
+    const state = this.exchangeState.get(exchange)!;
+    this.sockets.set(exchange, socket);
+
+    socket.addEventListener("open", () => {
       state.connected = true;
       state.connecting = false;
       state.lastOpenedAt = Date.now();
+      state.closeCode = null;
+      state.closeReason = null;
       state.lastError = null;
-      this.startBybitHeartbeat(socket);
+      onOpen?.();
     });
 
     socket.addEventListener("message", (event) => {
+      state.lastMessageAt = Date.now();
       try {
-        const liquidations = parseBybitLiquidations(event.data);
+        const liquidations = parse(event.data);
         for (const liquidation of liquidations) this.record(liquidation);
-        state.lastMessageAt = Date.now();
         if (liquidations.length > 0) {
           state.lastLiquidationAt = Math.max(...liquidations.map((liquidation) => liquidation.ts));
         }
@@ -396,35 +347,57 @@ export class LiquidationCollector extends DurableObject<Env> {
     });
 
     socket.addEventListener("error", () => {
-      state.lastError = "Error de WebSocket Bybit";
+      state.lastError = `Error de WebSocket ${exchange}`;
     });
 
     socket.addEventListener("close", (event) => {
-      if (this.sockets.get("bybit") === socket) this.sockets.delete("bybit");
-      this.stopBybitHeartbeat();
+      if (this.sockets.get(exchange) === socket) this.sockets.delete(exchange);
+      this.stopHeartbeat(exchange);
       state.connected = false;
       state.connecting = false;
       state.lastClosedAt = Date.now();
       state.closeCode = event.code;
       state.closeReason = event.reason || null;
       if (event.code !== 1000) {
-        state.lastError = `Bybit cerró WebSocket (code ${event.code}${event.reason ? `: ${event.reason}` : ""})`;
+        state.lastError = `${exchange} cerró WebSocket (code ${event.code}${event.reason ? `: ${event.reason}` : ""})`;
       }
       state.reconnects += 1;
       this.ctx.waitUntil(this.scheduleReconnect());
     });
   }
 
-  private startBybitHeartbeat(socket: WebSocket): void {
-    this.stopBybitHeartbeat();
-    this.bybitHeartbeat = setInterval(() => {
-      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ op: "ping" }));
-    }, BYBIT_PING_MS);
+  private startHeartbeat(exchange: ActiveExchange, socket: WebSocket, payload: () => string): void {
+    this.stopHeartbeat(exchange);
+    const timer = setInterval(() => {
+      if (socket.readyState === WebSocket.OPEN) socket.send(payload());
+    }, HEARTBEAT_MS);
+    this.heartbeats.set(exchange, timer);
   }
 
-  private stopBybitHeartbeat(): void {
-    if (this.bybitHeartbeat !== null) clearInterval(this.bybitHeartbeat);
-    this.bybitHeartbeat = null;
+  private stopHeartbeat(exchange: ActiveExchange): void {
+    const timer = this.heartbeats.get(exchange);
+    if (timer !== undefined) clearInterval(timer);
+    this.heartbeats.delete(exchange);
+  }
+
+  private async ensureGateMultipliers(): Promise<void> {
+    if (this.gateMultipliers.size >= this.symbols.size) return;
+    if (this.gateMultiplierLoad) return this.gateMultiplierLoad;
+
+    this.gateMultiplierLoad = Promise.allSettled(
+      [...this.symbols].map(async (symbol) => {
+        const contract = toGateContract(symbol);
+        const response = await fetch(`${GATE_API}/futures/usdt/contracts/${contract}`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`${contract} HTTP ${response.status}`);
+        const payload = (await response.json()) as { quanto_multiplier?: string };
+        const multiplier = Number(payload.quanto_multiplier);
+        if (Number.isFinite(multiplier) && multiplier > 0) this.gateMultipliers.set(symbol, multiplier);
+      }),
+    ).then(() => undefined).finally(() => {
+      this.gateMultiplierLoad = null;
+    });
+
+    return this.gateMultiplierLoad;
   }
 
   private async scheduleReconnect(): Promise<void> {
@@ -553,16 +526,7 @@ export class LiquidationCollector extends DurableObject<Env> {
           byExchange[row.exchange] = exchange;
         }
 
-        return [
-          `${hours}h`,
-          {
-            longUsd,
-            shortUsd,
-            totalUsd: longUsd + shortUsd,
-            events,
-            byExchange,
-          },
-        ];
+        return [`${hours}h`, { longUsd, shortUsd, totalUsd: longUsd + shortUsd, events, byExchange }];
       }),
     );
 
@@ -581,6 +545,7 @@ export class LiquidationCollector extends DurableObject<Env> {
       windows,
       collector: {
         symbols: [...this.symbols],
+        activeExchanges: ["bybit", "gate", "bitmex"],
         exchanges: this.serializedExchangeState(),
       },
     };
@@ -589,8 +554,7 @@ export class LiquidationCollector extends DurableObject<Env> {
   private storageStats() {
     const row = Array.from(
       this.sql.exec<{ rows: number; first_ts: number | null; last_ts: number | null }>(
-        `SELECT COUNT(*) AS rows, MIN(bucket_ts) AS first_ts, MAX(bucket_ts) AS last_ts
-         FROM liquidation_buckets`,
+        `SELECT COUNT(*) AS rows, MIN(bucket_ts) AS first_ts, MAX(bucket_ts) AS last_ts FROM liquidation_buckets`,
       ),
     )[0];
     return {
@@ -612,35 +576,6 @@ export class LiquidationCollector extends DurableObject<Env> {
   private serializedExchangeState() {
     return Object.fromEntries(this.exchangeState.entries());
   }
-}
-
-function parseBinanceLiquidations(raw: unknown): Liquidation[] {
-  const decoded = decodeJson(raw);
-  const entries = Array.isArray(decoded) ? decoded : [decoded];
-  const result: Liquidation[] = [];
-
-  for (const entry of entries) {
-    if (!isRecord(entry)) continue;
-    const event = isRecord(entry.data) ? entry.data : entry;
-    const order = isRecord(event.o) ? event.o : null;
-    if (!order || typeof order.s !== "string") continue;
-    const symbol = normalizeSymbol(order.s);
-    if (!symbol.endsWith("USDT")) continue;
-    const price = Number(order.ap || order.p);
-    const qty = Number(order.z || order.q);
-    const ts = Number(order.T ?? event.E ?? Date.now());
-    if (!positiveFinite(price) || !positiveFinite(qty) || !Number.isFinite(ts)) continue;
-    result.push({
-      exchange: "binance",
-      symbol,
-      ts,
-      side: order.S === "SELL" ? "long" : "short",
-      price,
-      qty,
-      notional: price * qty,
-    });
-  }
-  return result;
 }
 
 function parseBybitLiquidations(raw: unknown): Liquidation[] {
@@ -669,13 +604,58 @@ function parseBybitLiquidations(raw: unknown): Liquidation[] {
   });
 }
 
-async function responseSnippet(response: Response): Promise<string | null> {
-  try {
-    const text = (await response.text()).replace(/\s+/g, " ").trim();
-    return text ? text.slice(0, 240) : null;
-  } catch {
-    return null;
-  }
+function parseBitmexLiquidations(raw: unknown): Liquidation[] {
+  const payload = decodeJson(raw);
+  if (!isRecord(payload) || payload.table !== "liquidation" || payload.action !== "insert") return [];
+  const rows = Array.isArray(payload.data) ? payload.data : [];
+
+  return rows.flatMap((row) => {
+    if (!isRecord(row) || row.symbol !== "XBTUSD") return [];
+    const price = Number(row.price);
+    const qty = Math.abs(Number(row.leavesQty));
+    if (!positiveFinite(price) || !positiveFinite(qty)) return [];
+    return [{
+      exchange: "bitmex" as const,
+      symbol: "BTCUSDT",
+      ts: Date.now(),
+      side: row.side === "Sell" ? ("long" as const) : ("short" as const),
+      price,
+      qty,
+      notional: qty,
+    }];
+  });
+}
+
+function parseGateLiquidations(raw: unknown, multipliers: Map<string, number>): Liquidation[] {
+  const payload = decodeJson(raw);
+  if (!isRecord(payload) || payload.channel !== "futures.public_liquidates" || payload.event !== "update") return [];
+  const rows = Array.isArray(payload.result) ? payload.result : [];
+
+  return rows.flatMap((row) => {
+    if (!isRecord(row) || typeof row.contract !== "string") return [];
+    const symbol = normalizeSymbol(row.contract);
+    const price = Number(row.price);
+    const signedSize = Number(row.size);
+    const qty = Math.abs(signedSize);
+    const multiplier = multipliers.get(symbol);
+    const rawTs = Number(row.time ?? payload.time_ms ?? Date.now());
+    const ts = rawTs < 10_000_000_000 ? rawTs * 1000 : rawTs;
+    if (!positiveFinite(price) || !positiveFinite(qty) || !positiveFinite(multiplier ?? 0) || !Number.isFinite(ts)) return [];
+    const baseQty = qty * (multiplier ?? 0);
+    return [{
+      exchange: "gate" as const,
+      symbol,
+      ts,
+      side: signedSize < 0 ? ("long" as const) : ("short" as const),
+      price,
+      qty: baseQty,
+      notional: baseQty * price,
+    }];
+  });
+}
+
+function toGateContract(symbol: string): string {
+  return `${symbol.slice(0, -4)}_USDT`;
 }
 
 function decodeJson(raw: unknown): unknown {
@@ -704,8 +684,10 @@ function positiveFinite(value: number): boolean {
   return Number.isFinite(value) && value > 0;
 }
 
-function freshExchangeState(): ExchangeState {
+function freshExchangeState(enabled = true): ExchangeState {
   return {
+    enabled,
+    detail: null,
     connected: false,
     connecting: false,
     endpoint: null,
