@@ -80,21 +80,23 @@
 }
 
 .capital-flows-panel { margin-top: 14px; }
-.capital-flows-heading { align-items: center; margin-bottom: 15px; }
-.capital-flows-heading h3 { margin-bottom: 5px; }
+.capital-flows-heading { align-items: center; margin-bottom: 18px; }
+.capital-flows-heading h3 { margin-bottom: 6px; font-size: 19px; }
+.capital-flows-panel .kicker { font-size: 11px; }
+.capital-flows-panel .muted-note { font-size: 12px; line-height: 1.55; }
 .capital-flow-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-.capital-flow-card { min-height: 205px; }
+.capital-flow-card { min-height: 235px; }
 .capital-flow-warning { margin-top: 12px; }
-.insight-card { min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 14px; background: rgba(0,0,0,.15); }
-.insight-card-head { display: flex; justify-content: space-between; gap: 10px; padding-bottom: 10px; margin-bottom: 7px; border-bottom: 1px solid rgba(32,41,54,.6); }
-.insight-card-head strong { font-size: 11px; }
-.insight-card-head span { color: var(--muted); font-size: 8px; }
-.insight-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 5px 0; }
-.insight-row span { color: var(--muted); font-size: 9px; }
-.insight-row b { font-size: 10px; font-variant-numeric: tabular-nums; }
-.insight-big { font-size: 19px; font-weight: 800; letter-spacing: -.03em; padding: 5px 0 9px; }
-.insight-empty { min-height: 64px; display: grid; place-items: center; color: var(--muted); font-size: 9px; text-align: center; }
-.insight-note { display: block; color: var(--muted); font-size: 7px; margin-top: 10px; line-height: 1.4; }
+.insight-card { min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 16px; background: rgba(0,0,0,.15); }
+.insight-card-head { display: flex; justify-content: space-between; gap: 10px; padding-bottom: 11px; margin-bottom: 9px; border-bottom: 1px solid rgba(32,41,54,.6); }
+.insight-card-head strong { font-size: 13px; }
+.insight-card-head span { color: var(--muted); font-size: 10px; }
+.insight-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 0; }
+.insight-row span { color: var(--muted); font-size: 11px; }
+.insight-row b { font-size: 12px; font-variant-numeric: tabular-nums; }
+.insight-big { font-size: 24px; font-weight: 800; letter-spacing: -.03em; padding: 7px 0 11px; }
+.insight-empty { min-height: 64px; display: grid; place-items: center; color: var(--muted); font-size: 11px; line-height: 1.5; text-align: center; }
+.insight-note { display: block; color: var(--muted); font-size: 10px; margin-top: 11px; line-height: 1.55; }
 
 @media (max-width: 1180px) {
   .market-pulse { grid-column: 1 / -1; }
@@ -109,4 +111,8 @@
   .market-session { grid-template-columns: 1fr auto; }
   .market-session-hours { display: none; }
   .liquidation-summary-heading, .capital-flows-heading { flex-direction: column; }
+  .insight-card-head strong { font-size: 14px; }
+  .insight-row span { font-size: 12px; }
+  .insight-row b { font-size: 13px; }
+  .insight-note { font-size: 11px; }
 }
