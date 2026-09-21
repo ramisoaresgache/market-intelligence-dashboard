@@ -1,4 +1,4 @@
-export type LiquidationMapExchange = "binance" | "bybit";
+export type LiquidationMapExchange = "binance" | "bybit" | "okx";
 export type LiquidationMapSource = "aggregate" | LiquidationMapExchange;
 export type LiquidationSide = "long" | "short";
 
@@ -73,16 +73,7 @@ export function estimateLiquidationZones(
 
     const previousOi = sortedOi[index - 1]?.openInterestUsd ?? point.openInterestUsd;
     const positiveDelta = Math.max(0, point.openInterestUsd - previousOi);
-
-    // El volumen por sí solo no crea interés abierto. La versión anterior agregaba una fracción
-    // del turnover en cada vela aunque el OI no creciera, lo que acumulaba exposición repetida
-    // durante horas y sobredimensionaba el mapa. Ahora el proxy principal de posiciones nuevas es
-    // el crecimiento neto de OI, limitado por la actividad negociada del intervalo.
     const activityBackedDelta = Math.min(positiveDelta, Math.max(0, candle.turnoverUsd));
-
-    // El primer punto necesita una pequeña semilla para representar posiciones que ya estaban
-    // abiertas antes de comenzar la ventana histórica. Se mantiene deliberadamente acotada por OI
-    // y turnover para evitar tratar todo el OI existente como posiciones recién abiertas.
     const carryInContribution =
       index === 0
         ? Math.min(
