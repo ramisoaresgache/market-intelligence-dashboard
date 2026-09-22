@@ -58,7 +58,7 @@ El collector central arranca por defecto con estos perpetuos USDT:
 
 Se configuran en `apps/collector/wrangler.jsonc` mediante `COLLECTOR_SYMBOLS`.
 
-Esto significa que las liquidaciones y el histórico central de order book de esos símbolos se empiezan a construir **aunque nadie abra la página**.
+Esto significa que las liquidaciones y el histórico central de order book de esos símbolos se empiezan a construir **aunque nadie abra la página**, una vez que los Durable Objects fueron inicializados con `/bootstrap` después del deploy.
 
 Importante: no existe backfill mágico. Si mañana se agrega un símbolo nuevo a `COLLECTOR_SYMBOLS`, el histórico empieza desde ese momento hacia adelante salvo que incorporemos una fuente histórica específica.
 
@@ -257,11 +257,19 @@ Los límites de los planes gratuitos pueden cambiar. Para una auditoría real ha
 
 ### Cloudflare collector
 
-Liquidaciones:
+Arranque/health:
 
 ```text
 GET /bootstrap
 GET /health
+GET /v1/orderbook/health
+```
+
+`/bootstrap` inicializa los collectors de liquidaciones y order book. Sus alarmas mantienen luego la recolección y limpieza periódicas.
+
+Liquidaciones:
+
+```text
 GET /v1/liquidations/symbols
 GET /v1/liquidations/summary?symbol=BTCUSDT
 GET /v1/diagnostics/binance
@@ -271,7 +279,6 @@ GET /v1/diagnostics/binance-regions
 Order book central:
 
 ```text
-GET /v1/orderbook/health
 GET /v1/orderbook/symbols
 GET /v1/orderbook/history?symbol=BTCUSDT&exchange=all&hours=4
 ```
@@ -376,7 +383,13 @@ Deploy command: cd apps/collector && npx wrangler deploy
 Version command: cd apps/collector && npx wrangler versions upload
 ```
 
-Después de un deploy nuevo conviene verificar:
+Después de un deploy nuevo, abrir una vez:
+
+```text
+/bootstrap
+```
+
+para inicializar ambos Durable Objects y dejar sus alarmas programadas. Después verificar:
 
 ```text
 /health
