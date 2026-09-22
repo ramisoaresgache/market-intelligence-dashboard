@@ -217,17 +217,22 @@ Configuración esperada:
 - Builds for non-production branches: desactivado
 - Cloudflare Access: desactivado
 
-Después de desplegar, verificar:
+Después de desplegar, abrir una vez:
 
 ```text
 https://<worker>.workers.dev/bootstrap
+```
+
+Ese endpoint instancia/activa **ambos** collectors (`LiquidationCollector` y `OrderBookCollector`). A partir de ahí sus alarmas mantienen la recolección y limpieza periódicas aunque no haya un navegador abierto.
+
+Luego verificar:
+
+```text
 https://<worker>.workers.dev/health
 https://<worker>.workers.dev/v1/orderbook/health
 https://<worker>.workers.dev/v1/liquidations/symbols
 https://<worker>.workers.dev/v1/orderbook/symbols
 ```
-
-`/bootstrap` instancia/activa el collector de liquidaciones. El OrderBookCollector se instancia al consultar sus endpoints y su alarma mantiene luego la recolección periódica.
 
 ---
 
