@@ -111,8 +111,5 @@ export function useLiquidityHistory(key: string, books: NormalizedOrderBook[]): 
 
   const local = localHistory.key === key ? localHistory.frames : [];
   const central = centralHistory.key === key ? centralHistory.frames : [];
-  const cutoff = Date.now() - LIQUIDITY_RETENTION_MS;
-  return [...central, ...local]
-    .filter((frame) => frame.ts >= cutoff)
-    .sort((left, right) => left.ts - right.ts);
+  return [...central, ...local].sort((left, right) => left.ts - right.ts);
 }
