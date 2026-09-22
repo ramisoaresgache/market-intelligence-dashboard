@@ -62,11 +62,15 @@ type ColorStop = {
 
 const DEFAULT_THRESHOLD = 0.28;
 const Y_BINS = 96;
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 4;
+const ZOOM_STEP = 0.5;
 
 export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestKey = `${symbol}-${hours}-${source}`;
   const [threshold, setThreshold] = useState(DEFAULT_THRESHOLD);
+  const [zoom, setZoom] = useState(MIN_ZOOM);
   const [requestState, setRequestState] = useState<RequestState>({
     key: "",
     payload: null,
@@ -77,6 +81,11 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
   const payload = isCurrent ? requestState.payload : null;
   const error = isCurrent ? requestState.error : null;
   const loading = !isCurrent || (payload === null && error === null);
+
+  useEffect(() => {
+    setZoom(MIN_ZOOM);
+    setHover(null);
+  }, [requestKey]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -111,22 +120,27 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !payload) return;
-    const render = () => drawMap(canvas, payload, threshold);
+    const render = () => drawMap(canvas, payload, threshold, zoom);
     render();
     const observer = new ResizeObserver(render);
     observer.observe(canvas);
     return () => observer.disconnect();
-  }, [payload, threshold]);
+  }, [payload, threshold, zoom]);
 
   const sourceLabel = useMemo(() => {
     if (!payload?.sourcesUsed.length) return "—";
     return payload.sourcesUsed.map(exchangeLabel).join(" + ");
   }, [payload]);
 
+  function adjustZoom(delta: number) {
+    setZoom((current) => clamp(current + delta, MIN_ZOOM, MAX_ZOOM));
+    setHover(null);
+  }
+
   function handlePointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
     if (!payload || !canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
-    const geometry = computeGeometry(payload, rect.width, rect.height);
+    const geometry = computeGeometry(payload, rect.width, rect.height, zoom);
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
     if (x < geometry.left || x > geometry.right || y < geometry.top || y > geometry.bottom) {
@@ -165,6 +179,11 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
     });
   }
 
+  function handleWheel(event: React.WheelEvent<HTMLCanvasElement>) {
+    event.preventDefault();
+    adjustZoom(event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP);
+  }
+
   const activeHover = hover?.requestKey === requestKey ? hover : null;
 
   return (
@@ -176,6 +195,30 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
         {payload?.warnings.length ? (
           <span title={payload.warnings.join(" · ")}>fuente parcial</span>
         ) : null}
+        <div className={styles.zoomControl} aria-label="Controles de zoom">
+          <button
+            type="button"
+            onClick={() => adjustZoom(-ZOOM_STEP)}
+            disabled={zoom <= MIN_ZOOM}
+            aria-label="Alejar"
+          >
+            −
+          </button>
+          <span>{Math.round(zoom * 100)}%</span>
+          <button
+            type="button"
+            onClick={() => adjustZoom(ZOOM_STEP)}
+            disabled={zoom >= MAX_ZOOM}
+            aria-label="Acercar"
+          >
+            +
+          </button>
+          {zoom > MIN_ZOOM ? (
+            <button type="button" onClick={() => setZoom(MIN_ZOOM)} className={styles.resetZoom}>
+              Reset
+            </button>
+          ) : null}
+        </div>
         <label className={styles.thresholdControl}>
           <span>Umbral {threshold.toFixed(2)}</span>
           <input
@@ -197,6 +240,7 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
           aria-label="Mapa de liquidaciones estimadas"
           onPointerMove={handlePointerMove}
           onPointerLeave={() => setHover(null)}
+          onWheel={handleWheel}
         />
 
         {loading && <div className={styles.overlay}>Calculando zonas de liquidación estimadas…</div>}
@@ -248,6 +292,7 @@ function drawMap(
   canvas: HTMLCanvasElement,
   payload: LiquidationMapPayload,
   threshold: number,
+  zoom: number,
 ): void {
   const rect = canvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
@@ -271,7 +316,7 @@ function drawMap(
     return;
   }
 
-  const geometry = computeGeometry(payload, width, height);
+  const geometry = computeGeometry(payload, width, height, zoom);
   drawPlotBackground(ctx, geometry);
   drawGrid(ctx, geometry);
   const grid = buildHeatmapGrid(payload.zones, geometry, payload.hours);
@@ -280,7 +325,12 @@ function drawMap(
   drawAxes(ctx, geometry);
 }
 
-function computeGeometry(payload: LiquidationMapPayload, width: number, height: number): Geometry {
+function computeGeometry(
+  payload: LiquidationMapPayload,
+  width: number,
+  height: number,
+  zoom = MIN_ZOOM,
+): Geometry {
   const left = 18;
   const right = width - 62;
   const top = 18;
@@ -297,10 +347,18 @@ function computeGeometry(payload: LiquidationMapPayload, width: number, height: 
   const targetHigh = currentPrice * (1 + targetRatio);
   const hardLow = currentPrice * (1 - hardRatio);
   const hardHigh = currentPrice * (1 + hardRatio);
-  const minPrice = Math.max(hardLow, Math.min(targetLow, candleLow * 0.996));
-  const maxPrice = Math.min(hardHigh, Math.max(targetHigh, candleHigh * 1.004));
-  const minTs = candles[0]?.ts ?? Date.now();
-  const maxTs = (candles.at(-1)?.ts ?? minTs) + 5 * 60 * 1000;
+  const baseMinPrice = Math.max(hardLow, Math.min(targetLow, candleLow * 0.996));
+  const baseMaxPrice = Math.min(hardHigh, Math.max(targetHigh, candleHigh * 1.004));
+  const baseMinTs = candles[0]?.ts ?? Date.now();
+  const baseMaxTs = (candles.at(-1)?.ts ?? baseMinTs) + 5 * 60 * 1000;
+  const safeZoom = clamp(zoom, MIN_ZOOM, MAX_ZOOM);
+
+  const priceSpan = Math.max(Number.EPSILON, (baseMaxPrice - baseMinPrice) / safeZoom);
+  const minPrice = currentPrice - priceSpan / 2;
+  const maxPrice = currentPrice + priceSpan / 2;
+  const timeSpan = Math.max(5 * 60 * 1000, (baseMaxTs - baseMinTs) / safeZoom);
+  const maxTs = baseMaxTs;
+  const minTs = Math.max(baseMinTs, maxTs - timeSpan);
 
   return {
     left,
