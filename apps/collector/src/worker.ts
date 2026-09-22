@@ -27,6 +27,10 @@ export default {
 
     const url = new URL(request.url);
 
+    if (url.pathname === "/bootstrap") {
+      return withCors(await bootstrapCollectors(env), env);
+    }
+
     if (url.pathname === "/v1/diagnostics/binance-regions") {
       return withCors(await runBinanceRegionDiagnostics(env), env);
     }
@@ -39,6 +43,29 @@ export default {
     return collectorHandler.fetch(request, env);
   },
 } satisfies ExportedHandler<Env>;
+
+async function bootstrapCollectors(env: Env): Promise<Response> {
+  const liquidationStub = env.LIQUIDATION_COLLECTOR.getByName("primary");
+  const orderbookStub = env.ORDERBOOK_COLLECTOR.getByName("primary");
+
+  const [liquidations, orderbook] = await Promise.all([
+    liquidationStub.fetch(new Request("https://collector.internal/bootstrap")),
+    orderbookStub.fetch(new Request("https://collector.internal/v1/orderbook/health")),
+  ]);
+
+  const liquidationPayload = await safeJson(liquidations);
+  const orderbookPayload = await safeJson(orderbook);
+
+  return Response.json(
+    {
+      ok: liquidations.ok && orderbook.ok,
+      message: "Collectors inicializados",
+      liquidations: liquidationPayload,
+      orderbook: orderbookPayload,
+    },
+    { status: liquidations.ok && orderbook.ok ? 200 : 502 },
+  );
+}
 
 async function runBinanceRegionDiagnostics(env: Env): Promise<Response> {
   const [primary, regions] = await Promise.all([
@@ -88,6 +115,14 @@ async function runRegionProbe(
       objectName,
       error: errorMessage(error),
     };
+  }
+}
+
+async function safeJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return { status: response.status, statusText: response.statusText };
   }
 }
 
