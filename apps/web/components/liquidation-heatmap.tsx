@@ -70,22 +70,21 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestKey = `${symbol}-${hours}-${source}`;
   const [threshold, setThreshold] = useState(DEFAULT_THRESHOLD);
-  const [zoom, setZoom] = useState(MIN_ZOOM);
+  const [zoomState, setZoomState] = useState<{ key: string; value: number }>({
+    key: requestKey,
+    value: MIN_ZOOM,
+  });
   const [requestState, setRequestState] = useState<RequestState>({
     key: "",
     payload: null,
     error: null,
   });
   const [hover, setHover] = useState<HoverInfo | null>(null);
+  const zoom = zoomState.key === requestKey ? zoomState.value : MIN_ZOOM;
   const isCurrent = requestState.key === requestKey;
   const payload = isCurrent ? requestState.payload : null;
   const error = isCurrent ? requestState.error : null;
   const loading = !isCurrent || (payload === null && error === null);
-
-  useEffect(() => {
-    setZoom(MIN_ZOOM);
-    setHover(null);
-  }, [requestKey]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -133,7 +132,18 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
   }, [payload]);
 
   function adjustZoom(delta: number) {
-    setZoom((current) => clamp(current + delta, MIN_ZOOM, MAX_ZOOM));
+    setZoomState((current) => {
+      const currentValue = current.key === requestKey ? current.value : MIN_ZOOM;
+      return {
+        key: requestKey,
+        value: clamp(currentValue + delta, MIN_ZOOM, MAX_ZOOM),
+      };
+    });
+    setHover(null);
+  }
+
+  function resetZoom() {
+    setZoomState({ key: requestKey, value: MIN_ZOOM });
     setHover(null);
   }
 
@@ -214,7 +224,7 @@ export function LiquidationHeatmap({ symbol, hours, source }: LiquidationHeatmap
             +
           </button>
           {zoom > MIN_ZOOM ? (
-            <button type="button" onClick={() => setZoom(MIN_ZOOM)} className={styles.resetZoom}>
+            <button type="button" onClick={resetZoom} className={styles.resetZoom}>
               Reset
             </button>
           ) : null}
