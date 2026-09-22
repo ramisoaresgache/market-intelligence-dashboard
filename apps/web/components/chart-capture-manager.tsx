@@ -18,6 +18,7 @@ export function ChartCaptureManager() {
     observer.observe(document.body, { childList: true, subtree: true });
     const onResize = () => setRevision((value) => value + 1);
     window.addEventListener("resize", onResize);
+    setRevision((value) => value + 1);
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", onResize);
