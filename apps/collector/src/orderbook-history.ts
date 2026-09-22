@@ -163,7 +163,22 @@ export class OrderBookCollector extends DurableObject<Env> {
 
   private ensureFreshCollection(): void {
     if (this.collecting) return;
-    if (this.lastCollectionAt !== null && Date.now() - this.lastCollectionAt < SNAPSHOT_MS * 1.5) return;
+
+    if (this.lastCollectionAt === null) {
+      const stored = Array.from(
+        this.sql.exec<{ last_ts: number | null }>(
+          `SELECT MAX(bucket_ts) AS last_ts FROM orderbook_snapshots`,
+        ),
+      )[0]?.last_ts;
+      if (stored != null) this.lastCollectionAt = Number(stored);
+    }
+
+    if (
+      this.lastCollectionAt !== null &&
+      Date.now() - this.lastCollectionAt < SNAPSHOT_MS * 1.5
+    ) {
+      return;
+    }
     this.ctx.waitUntil(this.collectMinute());
   }
 
@@ -205,7 +220,7 @@ export class OrderBookCollector extends DurableObject<Env> {
         }),
       );
 
-      this.lastCollectionAt = Date.now();
+      this.lastCollectionAt = bucketTs;
     } finally {
       this.collecting = false;
     }
