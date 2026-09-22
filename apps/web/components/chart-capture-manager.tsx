@@ -1,7 +1,7 @@
 "use client";
 
 import { createPortal } from "react-dom";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { shareGraphic, type ShareableGraphic } from "../lib/chart-export";
 
 type CaptureTarget = {
@@ -11,21 +11,22 @@ type CaptureTarget = {
 };
 
 export function ChartCaptureManager() {
-  const [revision, setRevision] = useState(0);
+  const [, setRevision] = useState(0);
 
   useEffect(() => {
     const observer = new MutationObserver(() => setRevision((value) => value + 1));
     observer.observe(document.body, { childList: true, subtree: true });
     const onResize = () => setRevision((value) => value + 1);
     window.addEventListener("resize", onResize);
-    setRevision((value) => value + 1);
+    const frame = window.requestAnimationFrame(() => setRevision((value) => value + 1));
     return () => {
+      window.cancelAnimationFrame(frame);
       observer.disconnect();
       window.removeEventListener("resize", onResize);
     };
   }, []);
 
-  const targets = useMemo(() => collectTargets(), [revision]);
+  const targets = collectTargets();
 
   return (
     <>
