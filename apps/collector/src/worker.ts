@@ -1,10 +1,12 @@
 import collectorHandler, { LiquidationCollector } from "./index";
 import { BinanceRegionProbe } from "./binance-region-probe";
+import { OrderBookCollector } from "./orderbook-history";
 
-export { BinanceRegionProbe, LiquidationCollector };
+export { BinanceRegionProbe, LiquidationCollector, OrderBookCollector };
 
 type Env = {
   LIQUIDATION_COLLECTOR: DurableObjectNamespace;
+  ORDERBOOK_COLLECTOR: DurableObjectNamespace;
   BINANCE_REGION_PROBE: DurableObjectNamespace;
   COLLECTOR_SYMBOLS?: string;
   CORS_ORIGIN?: string;
@@ -27,6 +29,11 @@ export default {
 
     if (url.pathname === "/v1/diagnostics/binance-regions") {
       return withCors(await runBinanceRegionDiagnostics(env), env);
+    }
+
+    if (url.pathname.startsWith("/v1/orderbook/")) {
+      const stub = env.ORDERBOOK_COLLECTOR.getByName("primary");
+      return withCors(await stub.fetch(request), env);
     }
 
     return collectorHandler.fetch(request, env);
