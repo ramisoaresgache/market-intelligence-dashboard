@@ -29,6 +29,7 @@ const compact = new Intl.NumberFormat("es-AR", {
   notation: "compact",
   maximumFractionDigits: 2,
 });
+const EMPTY_BOOKS: NonNullable<ReturnType<typeof useMarketEngine>["snapshots"][string]>["orderBooks"] = [];
 const LIQUIDATION_HOURS = [4, 12, 24] as const;
 const LIQUIDATION_SOURCES: Array<{ value: LiquidationMapSource; label: string }> = [
   { value: "aggregate", label: "Binance + Bybit + OKX" },
@@ -78,7 +79,7 @@ export default function Dashboard() {
   }, [selectedSymbol]);
 
   const snapshot = snapshots[selectedSymbol];
-  const books = snapshot?.orderBooks ?? [];
+  const books = snapshot?.orderBooks ?? EMPTY_BOOKS;
   const bybit = snapshot?.metrics.find((metric) => metric.exchange === "bybit");
   const binance = snapshot?.metrics.find((metric) => metric.exchange === "binance");
   const okx = snapshot?.metrics.find((metric) => metric.exchange === "okx");
@@ -303,21 +304,21 @@ export default function Dashboard() {
       </section>
 
       <section className="panel liquidity-history-panel">
-        <div className="panel-head liquidity-history-head">
+        <div className="panel-head liquidation-panel-head">
           <div>
             <span className="kicker">HEATMAP DEL LIBRO DE ÓRDENES</span>
             <h3>Liquidez límite visible a través del tiempo</h3>
             <p>
-              Muestra dónde se concentra el nocional de órdenes limit visibles. “Todos” agrega los
-              libros que estén conectados en ese momento; también podés aislar un exchange.
+              El navegador conserva muestras locales de 5 s y las combina con snapshots centrales de
+              Cloudflare para mostrar continuidad histórica sin perder el detalle del momento actual.
             </p>
           </div>
-          <div className="liquidity-history-controls">
-            <div className="segmented exchange-filter">
+          <div className="map-controls">
+            <div className="segmented">
               {ORDERBOOK_SOURCES.map((exchange) => (
                 <button
                   type="button"
-                  key={exchange}
+                  key={`heatmap-${exchange}`}
                   className={exchangeFilter === exchange ? "active" : ""}
                   onClick={() => setExchangeFilter(exchange)}
                 >
@@ -326,33 +327,27 @@ export default function Dashboard() {
               ))}
             </div>
             <div className="segmented">
-              {LIQUIDITY_WINDOWS.map((windowOption) => (
+              {LIQUIDITY_WINDOWS.map((window) => (
                 <button
                   type="button"
-                  key={windowOption.value}
-                  className={liquidityWindowMs === windowOption.value ? "active" : ""}
-                  onClick={() => setLiquidityWindowMs(windowOption.value)}
+                  key={window.value}
+                  className={liquidityWindowMs === window.value ? "active" : ""}
+                  onClick={() => setLiquidityWindowMs(window.value)}
                 >
-                  {windowOption.label}
+                  {window.label}
                 </button>
               ))}
             </div>
           </div>
         </div>
-        <div className="bucket-line">
-          Fuente: <b>{exchangeFilter === "all" ? "exchanges conectados" : EXCHANGE_LABELS[exchangeFilter]}</b>
-          {" · "}muestras cada 5 s · historial local hasta 4 h
-        </div>
-        <div className="liquidity-history-stage">
-          <LiquidityHeatmap
-            frames={liquidityFrames}
-            windowMs={liquidityWindowMs}
-            currentPrice={liquidityPrice}
-          />
-        </div>
+        <LiquidityHeatmap
+          frames={liquidityFrames}
+          windowMs={liquidityWindowMs}
+          currentPrice={liquidityPrice}
+        />
         <p className="panel-footnote liquidity-footnote">
-          <span>Este mapa representa órdenes limit visibles, que pueden modificarse o cancelarse.</span>
-          <span>No es un mapa de liquidaciones.</span>
+          Órdenes limit visibles y cancelables. El histórico fino se conserva localmente en IndexedDB;
+          Cloudflare aporta snapshots de un minuto para continuidad 24/7 cuando existe cobertura central.
         </p>
       </section>
 
