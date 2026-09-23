@@ -15,7 +15,7 @@ type ModelHistory = {
   zones: EstimatedLiquidationZone[];
 };
 
-const SAMPLE_INTERVAL_MS = 5_000;
+const SAMPLE_INTERVAL_MS = 2_000;
 const MAX_SAMPLES = 360;
 const MAX_ZONES = 600;
 
