@@ -121,6 +121,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--cyan); outline-
 .candle-key { width: 5px; height: 11px; position: relative; display: inline-block; background: var(--green); }.candle-key::before { content: ""; position: absolute; left: 2px; top: -3px; width: 1px; height: 17px; background: inherit; }.candle-key.up { background: var(--green); }
 .threshold-control { margin-left: auto; display: flex; align-items: center; gap: 8px; color: #786c83; font: 7px ui-monospace, monospace; letter-spacing: .06em; }.threshold-control input { width: 105px; height: 3px; accent-color: #5fd6e1; cursor: pointer; }.threshold-control b { min-width: 25px; color: #a799b2; font-weight: 700; }
 .history-state { padding-left: 10px; border-left: 1px solid #3a2942; font: 7px ui-monospace, monospace; letter-spacing: .06em; }.history-state.live { color: var(--green); }.history-state.loading { color: var(--amber); }.history-state.unavailable { color: var(--red); }
+.snapshot-time { padding-left: 10px; border-left: 1px solid #3a2942; color: #9b8ba9; font: 7px ui-monospace, monospace; letter-spacing: .06em; }.chart-toolbar .refresh-control { min-width: auto; padding: 0 9px; color: var(--cyan); }
 .liquidation-map-stage { background: #05070d; }
 .liquidation-chart { min-height: 560px; }
 .model-disclaimer { min-height: 42px; display: flex; align-items: center; gap: 13px; padding: 9px 18px; border-top: 1px solid #291532; color: #766982; background: #09070d; font-size: 8px; line-height: 1.45; }
