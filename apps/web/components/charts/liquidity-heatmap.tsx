@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type PointerEvent, type WheelEvent } from "react";
 import type { LiquidityFrame } from "../../lib/market/use-liquidity-history";
 import type { HistoricalCandle } from "../../lib/market/use-historical-liquidation-map";
 import { percentile } from "../../lib/market/engine/visualization";
@@ -10,8 +10,8 @@ import { ChartToolbar } from "./chart-toolbar";
 const WIDTH = 1120;
 const HEIGHT = 500;
 const PLOT = { left: 76, right: 270, top: 28, bottom: 52 };
-const BASE_WINDOW_MS = 4 * 60 * 60_000;
 const BASE_HALF_RANGE_RATIO = 0.0025;
+const RANGE_OPTIONS = [15, 60, 240] as const;
 
 type Props = {
   symbol: string;
@@ -21,12 +21,45 @@ type Props = {
 
 export function LiquidityHeatmap({ symbol, history, candles }: Props) {
   const [zoom, setZoom] = useState(1);
+  const [rangeMinutes, setRangeMinutes] = useState<(typeof RANGE_OPTIONS)[number]>(240);
+  const [pan, setPan] = useState({ timeMs: 0, price: 0 });
   const [exportLabel, setExportLabel] = useState("Export PNG");
   const svgRef = useRef<SVGSVGElement>(null);
-  const model = useMemo(() => buildModel(history, candles, zoom), [history, candles, zoom]);
+  const dragRef = useRef<{ x: number; y: number; panTime: number; panPrice: number; priceSpan: number } | null>(null);
+  const model = useMemo(() => buildModel(history, candles, zoom, rangeMinutes, pan), [history, candles, zoom, rangeMinutes, pan]);
 
   const changeZoom = (direction: number) => {
     setZoom((current) => clamp(Number((current + direction * 0.5).toFixed(1)), 1, 4));
+  };
+  const resetView = () => { setZoom(1); setPan({ timeMs: 0, price: 0 }); };
+  const selectRange = (minutes: (typeof RANGE_OPTIONS)[number]) => {
+    setRangeMinutes(minutes);
+    resetView();
+  };
+  const handleWheel = (event: WheelEvent<SVGSVGElement>) => {
+    event.preventDefault();
+    changeZoom(event.deltaY < 0 ? 1 : -1);
+  };
+  const handlePointerDown = (event: PointerEvent<SVGSVGElement>) => {
+    if (!model) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = { x: event.clientX, y: event.clientY, panTime: pan.timeMs, panPrice: pan.price, priceSpan: model.maxPrice - model.minPrice };
+  };
+  const handlePointerMove = (event: PointerEvent<SVGSVGElement>) => {
+    const drag = dragRef.current;
+    if (!drag || !model) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const dx = (event.clientX - drag.x) * (WIDTH / rect.width);
+    const dy = (event.clientY - drag.y) * (HEIGHT / rect.height);
+    const duration = model.end - model.start;
+    setPan({
+      timeMs: drag.panTime - (dx / (WIDTH - PLOT.left - PLOT.right)) * duration,
+      price: drag.panPrice + (dy / (HEIGHT - PLOT.top - PLOT.bottom)) * drag.priceSpan,
+    });
+  };
+  const stopDragging = (event: PointerEvent<SVGSVGElement>) => {
+    if (dragRef.current && event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    dragRef.current = null;
   };
   const exportChart = async () => {
     if (!svgRef.current) return;
@@ -47,14 +80,12 @@ export function LiquidityHeatmap({ symbol, history, candles }: Props) {
           <h2>Order book liquidity heatmap</h2>
           <p>Cloudflare history plus 160 live price levels nearest the market from Binance + Bybit.</p>
         </div>
-        <ChartToolbar
-          zoom={zoom}
-          onZoomIn={() => changeZoom(1)}
-          onZoomOut={() => changeZoom(-1)}
-          onReset={() => setZoom(1)}
-          onExport={() => void exportChart()}
-          exportLabel={exportLabel}
-        />
+        <div className="orderbook-heading-controls">
+          <div className="time-range-control" aria-label="Order book time range">
+            {RANGE_OPTIONS.map((minutes) => <button key={minutes} type="button" className={rangeMinutes === minutes ? "active" : ""} onClick={() => selectRange(minutes)}>{minutes < 60 ? `${minutes}m` : `${minutes / 60}h`}</button>)}
+          </div>
+          <ChartToolbar zoom={zoom} onZoomIn={() => changeZoom(1)} onZoomOut={() => changeZoom(-1)} onReset={resetView} onExport={() => void exportChart()} exportLabel={exportLabel} />
+        </div>
       </div>
 
       <div className="chart-legend">
@@ -62,7 +93,7 @@ export function LiquidityHeatmap({ symbol, history, candles }: Props) {
         <span><i className="candle-key up" /> price candles</span>
         <span><i className="legend-bar bid-bar" /> current bids</span>
         <span><i className="legend-bar ask-bar" /> current asks</span>
-        <small>Colors are relative to the visible window · zoom only with − / +</small>
+        <small>Drag to move · wheel or − / + to zoom</small>
       </div>
 
       <div className="chart-stage">
@@ -73,6 +104,11 @@ export function LiquidityHeatmap({ symbol, history, candles }: Props) {
             viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
             role="img"
             aria-label={`${symbol} session liquidity heatmap`}
+            onWheel={handleWheel}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={stopDragging}
+            onPointerCancel={stopDragging}
           >
             <rect width={WIDTH} height={HEIGHT} fill="#070b12" />
             <rect x={PLOT.left} y={PLOT.top} width={WIDTH - PLOT.left - PLOT.right} height={HEIGHT - PLOT.top - PLOT.bottom} fill="#071625" />
@@ -97,6 +133,11 @@ export function LiquidityHeatmap({ symbol, history, candles }: Props) {
                   <rect x={candle.x - candle.width / 2} y={candle.bodyY} width={candle.width} height={candle.bodyHeight} fill={candle.up ? "#2ee6aa" : "#ff5377"} rx=".7" />
                 </g>
               ))}
+              {model.currentPriceY !== null ? <>
+                <line x1={PLOT.left} x2={WIDTH - PLOT.right} y1={model.currentPriceY} y2={model.currentPriceY} stroke="#67deea" strokeWidth="1.2" strokeDasharray="7 5" opacity=".95" />
+                <rect x={WIDTH - PLOT.right - 66} y={model.currentPriceY - 9} width="66" height="18" rx="3" fill="#123a47" stroke="#67deea" strokeWidth=".7" />
+                <text x={WIDTH - PLOT.right - 5} y={model.currentPriceY + 3} textAnchor="end" fill="#bff9ff" fontSize="8" fontWeight="700" fontFamily="ui-monospace, monospace">{formatPrice(model.currentPrice)}</text>
+              </> : null}
               <line x1={WIDTH - PLOT.right + 12} y1={PLOT.top} x2={WIDTH - PLOT.right + 12} y2={HEIGHT - PLOT.bottom} stroke="#31465c" />
               {model.profile.map((level) => <g key={`profile-${level.price}-${level.side}`}>
                 <rect x={level.x} y={level.y - 8} width={level.width} height="16" rx="2" fill={level.side === "bid" ? "#22d5b0" : "#ff547c"} opacity={0.1 + level.intensity * 0.25} />
@@ -120,18 +161,24 @@ export function LiquidityHeatmap({ symbol, history, candles }: Props) {
           </div>
         )}
       </div>
-      <div className="orderbook-chart-note"><b>Cómo leerlo</b><span>Cada franja horizontal es liquidez límite visible a ese precio. Amarillo indica más nocional relativo; no significa compra o venta ejecutada. El histórico está agrupado por el collector, mientras que “Current depth” conserva más detalle live.</span></div>
+      <div className="orderbook-chart-note"><b>Cómo leerlo</b><span>La línea celeste punteada es el precio medio actual. Cada franja horizontal es nocional de órdenes límite publicado —no volumen ya negociado—: amarillo representa mayor concentración relativa. El histórico está agrupado; “Current depth” conserva más detalle live.</span></div>
     </section>
   );
 }
 
-function buildModel(history: LiquidityFrame[], candles: HistoricalCandle[], zoom: number) {
+function buildModel(history: LiquidityFrame[], candles: HistoricalCandle[], zoom: number, rangeMinutes: number, requestedPan: { timeMs: number; price: number }) {
   if (history.length < 2) return null;
-  const end = history.at(-1)?.ts ?? 0;
-  const start = end - BASE_WINDOW_MS / zoom;
+  const latestTs = history.at(-1)?.ts ?? 0;
+  const oldestTs = history[0]?.ts ?? latestTs;
+  const duration = rangeMinutes * 60_000 / zoom;
+  const maxBack = Math.max(0, latestTs - oldestTs - duration);
+  const timePan = clamp(requestedPan.timeMs, -maxBack, 0);
+  const end = latestTs + timePan;
+  const start = end - duration;
   const frames = history.filter((frame) => frame.ts >= start && frame.ts <= end);
   if (frames.length < 2) return null;
-  const center = frames.at(-1)?.mid ?? 0;
+  const currentPrice = history.at(-1)?.mid ?? 0;
+  const center = (frames.at(-1)?.mid ?? currentPrice) + requestedPan.price;
   const visibleCandles = candles.filter((candle) => candle.openTime >= start - 900_000 && candle.openTime <= end + 900_000);
   const halfRange = center * BASE_HALF_RANGE_RATIO / Math.sqrt(zoom);
   const minPrice = center - halfRange;
@@ -176,7 +223,7 @@ function buildModel(history: LiquidityFrame[], candles: HistoricalCandle[], zoom
       bodyY: Math.min(openY, closeY), bodyHeight: Math.max(1.5, Math.abs(closeY - openY)),
     };
   });
-  const latest = frames.at(-1);
+  const latest = history.at(-1);
   const profileLevels = latest?.levels ?? [];
   const profileNotionals = profileLevels.flatMap((level) => [level.bidNotional, level.askNotional]).filter(Boolean);
   const profileCeiling = Math.max(1, percentile(profileNotionals, 0.95));
@@ -188,7 +235,10 @@ function buildModel(history: LiquidityFrame[], candles: HistoricalCandle[], zoom
     ...asks.map((level, index) => profileRow(level.price, level.askNotional, "ask", profileX, 72 + index * 20, profileWidth, profileCeiling)),
     ...bids.map((level, index) => profileRow(level.price, level.bidNotional, "bid", profileX, 265 + index * 20, profileWidth, profileCeiling)),
   ];
-  return { cells, candles: candleShapes, profile, minPrice, maxPrice, start, end };
+  const currentPriceY = currentPrice >= minPrice && currentPrice <= maxPrice
+    ? scale(currentPrice, maxPrice, minPrice, PLOT.top, HEIGHT - PLOT.bottom)
+    : null;
+  return { cells, candles: candleShapes, profile, minPrice, maxPrice, start, end, currentPrice, currentPriceY };
 }
 
 function profileRow(price: number, notional: number, side: "bid" | "ask", x: number, y: number, maxWidth: number, ceiling: number) {
