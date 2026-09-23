@@ -232,3 +232,4 @@ function nullableNumber(value: unknown): number | null {
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "error desconocido";
 }
+

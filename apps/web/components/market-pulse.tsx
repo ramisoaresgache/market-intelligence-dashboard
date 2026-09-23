@@ -1,16 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import * as echarts from "echarts";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEChart } from "./charts/use-echart";
 
 type DailyPayload = {
-  symbol: string;
   source: string;
   open: number;
   close: number;
   changeUsd: number;
   changePct: number;
   points: Array<{ ts: number; price: number }>;
-  warnings?: string[];
 };
 
 type Session = {
@@ -24,66 +24,28 @@ type Session = {
 };
 
 const SESSIONS: Session[] = [
-  {
-    id: "asia",
-    label: "ASIA",
-    city: "Tokio",
-    timeZone: "Asia/Tokyo",
-    openMinute: 9 * 60,
-    closeMinute: 15 * 60,
-    hoursLabel: "09:00–15:00",
-  },
-  {
-    id: "europe",
-    label: "EUROPA",
-    city: "Londres",
-    timeZone: "Europe/London",
-    openMinute: 8 * 60,
-    closeMinute: 16 * 60 + 30,
-    hoursLabel: "08:00–16:30",
-  },
-  {
-    id: "usa",
-    label: "USA",
-    city: "Nueva York",
-    timeZone: "America/New_York",
-    openMinute: 9 * 60 + 30,
-    closeMinute: 16 * 60,
-    hoursLabel: "09:30–16:00",
-  },
+  { id: "asia", label: "ASIA", city: "Tokio", timeZone: "Asia/Tokyo", openMinute: 9 * 60, closeMinute: 15 * 60, hoursLabel: "09:00–15:00" },
+  { id: "europe", label: "EUROPA", city: "Londres", timeZone: "Europe/London", openMinute: 8 * 60, closeMinute: 16 * 60 + 30, hoursLabel: "08:00–16:30" },
+  { id: "usa", label: "USA", city: "Nueva York", timeZone: "America/New_York", openMinute: 9 * 60 + 30, closeMinute: 16 * 60, hoursLabel: "09:30–16:00" },
 ];
 
+const subscribeToHydration = () => () => undefined;
+
 export function MarketPulse({ symbol, currentPrice }: { symbol: string; currentPrice?: number | null }) {
-  const [requestState, setRequestState] = useState<{
-    key: string;
-    payload: DailyPayload | null;
-    error: string | null;
-  }>({ key: "", payload: null, error: null });
+  const [request, setRequest] = useState<{ symbol: string; data: DailyPayload | null; error: string | null }>({ symbol: "", data: null, error: null });
   const [clock, setClock] = useState(() => Date.now());
+  const hydrated = useSyncExternalStore(subscribeToHydration, () => true, () => false);
 
   useEffect(() => {
     const controller = new AbortController();
-    void fetch(`/api/market-daily?symbol=${encodeURIComponent(symbol)}`, {
-      signal: controller.signal,
-      cache: "no-store",
-    })
+    void fetch(`/api/market-daily?symbol=${encodeURIComponent(symbol)}`, { signal: controller.signal, cache: "no-store" })
       .then(async (response) => {
         const data = (await response.json()) as DailyPayload & { error?: string };
         if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
         return data;
       })
-      .then((data) => {
-        if (!controller.signal.aborted) setRequestState({ key: symbol, payload: data, error: null });
-      })
-      .catch((reason: unknown) => {
-        if (!controller.signal.aborted) {
-          setRequestState({
-            key: symbol,
-            payload: null,
-            error: reason instanceof Error ? reason.message : "No se pudo cargar el histórico diario",
-          });
-        }
-      });
+      .then((data) => { if (!controller.signal.aborted) setRequest({ symbol, data, error: null }); })
+      .catch((reason: unknown) => { if (!controller.signal.aborted) setRequest({ symbol, data: null, error: reason instanceof Error ? reason.message : "Histórico no disponible" }); });
     return () => controller.abort();
   }, [symbol]);
 
@@ -92,120 +54,60 @@ export function MarketPulse({ symbol, currentPrice }: { symbol: string; currentP
     return () => window.clearInterval(timer);
   }, []);
 
-  const isCurrent = requestState.key === symbol;
-  const payload = isCurrent ? requestState.payload : null;
-  const error = isCurrent ? requestState.error : null;
-  const path = useMemo(() => sparklinePath(payload?.points ?? []), [payload]);
-  const latest = currentPrice ?? payload?.close;
-  const open = payload?.open;
-  const liveChangeUsd = latest != null && open != null ? latest - open : payload?.changeUsd;
-  const liveChangePct = latest != null && open != null && open > 0 ? ((latest - open) / open) * 100 : payload?.changePct;
-  const tone = (liveChangeUsd ?? 0) >= 0 ? "positive" : "negative";
+  const data = request.symbol === symbol ? request.data : null;
+  const error = request.symbol === symbol ? request.error : null;
+  const latest = currentPrice ?? data?.close;
+  const changeUsd = latest != null && data?.open != null ? latest - data.open : data?.changeUsd;
+  const changePct = latest != null && data?.open ? ((latest - data.open) / data.open) * 100 : data?.changePct;
+  const tone = (changeUsd ?? 0) >= 0 ? "positive" : "negative";
+  const option = useMemo(() => pulseOption(data?.points ?? [], tone), [data?.points, tone]);
+  const { containerRef, exportPng } = useEChart(option);
+  const sessions = SESSIONS.map((session) => ({ ...session, ...(hydrated ? marketSessionState(clock, session) : { open: false, localTime: "—" }) }));
+  const activeCount = sessions.filter((session) => session.open).length;
 
-  return (
-    <div className="market-pulse">
-      <div className="market-pulse-main">
-        <div className="market-pulse-heading">
-          <div>
-            <span className="kicker">MOVIMIENTO 24 H</span>
-            <strong className={tone}>{formatSignedPct(liveChangePct)}</strong>
-          </div>
-          <div className="market-pulse-usdt">
-            <span>Cambio</span>
-            <b className={tone}>{formatSignedMoney(liveChangeUsd)}</b>
-          </div>
-        </div>
-        <div className="market-pulse-chart" aria-label="Evolución del precio durante las últimas 24 horas">
-          {payload?.points.length ? (
-            <svg viewBox="0 0 320 86" preserveAspectRatio="none" role="img">
-              <path className={`pulse-area ${tone}`} d={`${path} L 320 86 L 0 86 Z`} />
-              <path className={`pulse-line ${tone}`} d={path} />
-            </svg>
-          ) : (
-            <div className="pulse-loading">{error ?? "Cargando 24 h…"}</div>
-          )}
-        </div>
-        <div className="market-pulse-meta">
-          <span>Apertura 24 h {formatPrice(open)}</span>
-          <span>{payload?.source ? `Fuente ${payload.source.toUpperCase()}` : "—"}</span>
-        </div>
+  return <section className="market-pulse" aria-label="Movimiento de mercado y sesiones activas">
+    <div className="market-pulse-main">
+      <div className="market-pulse-heading">
+        <div><span>MOVIMIENTO 24 H</span><strong className={tone}>{signedPercent(changePct)}</strong></div>
+        <div className="market-pulse-change"><span>CAMBIO</span><b className={tone}>{signedMoney(changeUsd)}</b></div>
+        <button type="button" onClick={() => exportPng(`${symbol}-24h.png`)} aria-label="Exportar movimiento 24 horas">PNG</button>
       </div>
-
-      <div className="market-sessions">
-        <span className="kicker">SESIONES</span>
-        {SESSIONS.map((session) => {
-          const state = marketSessionState(clock, session);
-          return (
-            <div className="market-session" key={session.id}>
-              <div>
-                <strong>{session.label}</strong>
-                <span>{session.city}</span>
-              </div>
-              <div className="market-session-hours">
-                <b>{session.hoursLabel}</b>
-                <small>{state.localTime}</small>
-              </div>
-              <span className={`session-state ${state.open ? "open" : "closed"}`}>
-                {state.open ? "ABIERTO" : "CERRADO"}
-              </span>
-            </div>
-          );
-        })}
-      </div>
+      <div ref={containerRef} className="market-pulse-chart" role="img" aria-label={`${symbol} price line during the last 24 hours`} />
+      <div className="market-pulse-meta"><span>Apertura {formatPrice(data?.open)}</span><span>{data?.source ? data.source.toUpperCase() : error ?? "Cargando…"}</span></div>
     </div>
-  );
+    <div className="market-sessions">
+      <header><span>SESIONES</span><b>{activeCount} ACTIVAS</b></header>
+      {sessions.map((session) => <div className="market-session" key={session.id}>
+        <div><strong>{session.label}</strong><span>{session.city}</span></div>
+        <div className="market-session-hours"><b>{session.localTime}</b><small>{session.hoursLabel}</small></div>
+        <span className={`session-state ${session.open ? "open" : "closed"}`}>{session.open ? "ABIERTA" : "CERRADA"}</span>
+      </div>)}
+    </div>
+  </section>;
 }
 
-function sparklinePath(points: Array<{ ts: number; price: number }>): string {
-  if (points.length < 2) return "";
-  const prices = points.map((point) => point.price);
-  const min = Math.min(...prices);
-  const max = Math.max(...prices);
-  const spread = Math.max(max - min, max * 0.001, 1);
-  return points
-    .map((point, index) => {
-      const x = (index / Math.max(1, points.length - 1)) * 320;
-      const y = 8 + (1 - (point.price - min) / spread) * 68;
-      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
-    })
-    .join(" ");
+function pulseOption(points: DailyPayload["points"], tone: "positive" | "negative"): echarts.EChartsOption {
+  const color = tone === "positive" ? "#2ee6aa" : "#ff5377";
+  return {
+    animation: false,
+    backgroundColor: "transparent",
+    grid: { left: 2, right: 2, top: 7, bottom: 5 },
+    tooltip: { trigger: "axis", confine: true, backgroundColor: "#080d14", borderColor: "#26364b", textStyle: { color: "#dce6f2", fontSize: 9 }, valueFormatter: (value) => formatPrice(Number(value)) },
+    xAxis: { type: "time", show: false },
+    yAxis: { type: "value", show: false, scale: true },
+    series: [{ type: "line", data: points.map((point) => [point.ts, point.price]), showSymbol: false, smooth: 0.16, lineStyle: { color, width: 1.7 }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: `${color}35` }, { offset: 1, color: `${color}00` }]) }, emphasis: { disabled: true } }],
+  };
 }
 
-function marketSessionState(now: number, session: Session) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: session.timeZone,
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(now);
+export function marketSessionState(now: number, session: Session) {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: session.timeZone, weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(now);
   const weekday = parts.find((part) => part.type === "weekday")?.value ?? "Sun";
   const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
   const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
   const currentMinute = hour * 60 + minute;
-  const businessDay = !["Sat", "Sun"].includes(weekday);
-  return {
-    open: businessDay && currentMinute >= session.openMinute && currentMinute < session.closeMinute,
-    localTime: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`,
-  };
+  return { open: !["Sat", "Sun"].includes(weekday) && currentMinute >= session.openMinute && currentMinute < session.closeMinute, localTime: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}` };
 }
 
-function formatSignedPct(value?: number): string {
-  if (value == null || !Number.isFinite(value)) return "—";
-  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
-}
-
-function formatSignedMoney(value?: number): string {
-  if (value == null || !Number.isFinite(value)) return "—";
-  const sign = value >= 0 ? "+" : "−";
-  return `${sign}$${formatCompact(Math.abs(value))} USDT`;
-}
-
-function formatPrice(value?: number): string {
-  if (value == null || !Number.isFinite(value)) return "—";
-  return `$${new Intl.NumberFormat("es-AR", { maximumFractionDigits: value >= 100 ? 2 : 5 }).format(value)}`;
-}
-
-function formatCompact(value: number): string {
-  return new Intl.NumberFormat("es-AR", { notation: "compact", maximumFractionDigits: 2 }).format(value);
-}
+function signedPercent(value?: number) { return value == null || !Number.isFinite(value) ? "—" : `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`; }
+function signedMoney(value?: number) { return value == null || !Number.isFinite(value) ? "—" : `${value >= 0 ? "+" : "−"}$${new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(Math.abs(value))}`; }
+function formatPrice(value?: number) { return value == null || !Number.isFinite(value) ? "—" : `$${new Intl.NumberFormat("en-US", { maximumFractionDigits: value >= 100 ? 2 : 5 }).format(value)}`; }

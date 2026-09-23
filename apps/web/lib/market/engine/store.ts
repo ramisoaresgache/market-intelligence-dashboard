@@ -1,3 +1,4 @@
+import { MARKET_SYMBOLS } from "../symbols";
 import type {
   MarketEvent,
   MarketSnapshot,
@@ -8,11 +9,9 @@ import type {
 export class MarketStore {
   private readonly snapshots = new Map<string, MarketSnapshot>();
   private readonly statuses = new Map<string, SourceStatus>();
-  private readonly symbols: string[];
 
-  constructor(symbols: string[] = ["BTCUSDT"]) {
-    this.symbols = [...symbols];
-    for (const symbol of symbols) {
+  constructor() {
+    for (const symbol of MARKET_SYMBOLS) {
       this.snapshots.set(symbol, {
         symbol,
         ts: 0,
@@ -45,14 +44,13 @@ export class MarketStore {
         "exchange",
       );
     } else {
-      snapshot.liquidations = [...snapshot.liquidations.slice(-199), event.data];
+      snapshot.liquidations = [...snapshot.liquidations.slice(-99), event.data];
     }
   }
 
   snapshot(now = Date.now()): MarketViewState {
     return {
-      activeSymbol: this.symbols[0] ?? "",
-      symbols: [...this.symbols],
+      symbols: [...MARKET_SYMBOLS],
       snapshots: Object.fromEntries(
         [...this.snapshots].map(([symbol, value]) => [
           symbol,
