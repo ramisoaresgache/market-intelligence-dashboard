@@ -5,6 +5,7 @@ import { EstimatedLiquidationHeatmap } from "../components/charts/estimated-liqu
 import { LiquidityHeatmap } from "../components/charts/liquidity-heatmap";
 import { consolidateOrderBooks } from "../lib/market/engine/visualization";
 import { useEstimatedLiquidations } from "../lib/market/use-estimated-liquidations";
+import { useHistoricalLiquidationMap } from "../lib/market/use-historical-liquidation-map";
 import { useLiquidityHistory } from "../lib/market/use-liquidity-history";
 import { useMarketEngine } from "../lib/market/use-market-engine";
 import type {
@@ -28,6 +29,7 @@ export default function Dashboard() {
   const snapshot = snapshots[activeSymbol];
   const history = useLiquidityHistory(activeSymbol, snapshot);
   const liquidationModel = useEstimatedLiquidations(activeSymbol, snapshot);
+  const historicalLiquidations = useHistoricalLiquidationMap(activeSymbol);
   const book = useMemo(
     () => consolidateOrderBooks(snapshot?.orderBooks ?? []),
     [snapshot?.orderBooks],
@@ -117,8 +119,10 @@ export default function Dashboard() {
             <EstimatedLiquidationHeatmap
               symbol={activeSymbol}
               samples={liquidationModel.samples}
-              zones={liquidationModel.zones}
+              candles={historicalLiquidations.candles}
+              zones={[...historicalLiquidations.zones, ...liquidationModel.zones]}
               observed={snapshot?.liquidations ?? []}
+              historyState={historicalLiquidations.state}
             />
           </section>
 

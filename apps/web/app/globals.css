@@ -101,11 +101,13 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--cyan); outline-
 .liquidation-map-heading { min-height: 88px; }
 .map-heading-controls { display: flex; align-items: center; gap: 9px; }
 .market-chip { display: inline-flex; align-items: center; height: 29px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 5px; color: #9eabbc; background: #080d14; font: 8px ui-monospace, monospace; letter-spacing: .04em; }
+.time-range-control { display: flex; gap: 4px; }.time-range-control button { height: 29px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--muted); background: #080d14; font: 8px ui-monospace, monospace; cursor: pointer; }.time-range-control button.active { color: var(--cyan); border-color: rgba(31,214,228,.48); background: rgba(31,214,228,.08); }
 .model-badge { display: inline-flex; vertical-align: 1px; margin-left: 7px; padding: 3px 5px; border: 1px solid rgba(171, 103, 255, .38); border-radius: 3px; color: #c69cff; background: rgba(118, 45, 173, .15); font: 7px ui-monospace, monospace; letter-spacing: .08em; }
 .liquidation-map-legend { background: rgba(43, 7, 65, .28); border-bottom-color: #271332; }
 .liquidation-scale { width: 34px; height: 5px; border-radius: 2px; background: linear-gradient(90deg, #43105d, #256b8f, #31bc75, #f5ec18); }
 .candle-key { width: 5px; height: 11px; position: relative; display: inline-block; background: var(--green); }.candle-key::before { content: ""; position: absolute; left: 2px; top: -3px; width: 1px; height: 17px; background: inherit; }.candle-key.up { background: var(--green); }
 .threshold-control { margin-left: auto; display: flex; align-items: center; gap: 8px; color: #786c83; font: 7px ui-monospace, monospace; letter-spacing: .06em; }.threshold-control input { width: 105px; height: 3px; accent-color: #5fd6e1; cursor: pointer; }.threshold-control b { min-width: 25px; color: #a799b2; font-weight: 700; }
+.history-state { padding-left: 10px; border-left: 1px solid #3a2942; font: 7px ui-monospace, monospace; letter-spacing: .06em; }.history-state.live { color: var(--green); }.history-state.loading { color: var(--amber); }.history-state.unavailable { color: var(--red); }
 .liquidation-map-stage { background: #05070d; }
 .liquidation-chart { min-height: 560px; }
 .model-disclaimer { min-height: 42px; display: flex; align-items: center; gap: 13px; padding: 9px 18px; border-top: 1px solid #291532; color: #766982; background: #09070d; font-size: 8px; line-height: 1.45; }

@@ -8,6 +8,7 @@ import {
 } from "../../lib/market/engine/estimated-liquidations";
 import { percentile } from "../../lib/market/engine/visualization";
 import type { LiquidationEvent } from "../../lib/market/types";
+import type { HistoricalCandle } from "../../lib/market/use-historical-liquidation-map";
 import { exportSvgAsPng } from "./chart-export";
 import { ChartToolbar } from "./chart-toolbar";
 
@@ -20,18 +21,21 @@ const PLOT_BOTTOM = HEIGHT - PLOT.bottom;
 type Props = {
   symbol: string;
   samples: DerivativesSample[];
+  candles: HistoricalCandle[];
   zones: EstimatedLiquidationZone[];
   observed: LiquidationEvent[];
+  historyState: "loading" | "live" | "unavailable";
 };
 
-export function EstimatedLiquidationHeatmap({ symbol, samples, zones, observed }: Props) {
+export function EstimatedLiquidationHeatmap({ symbol, samples, candles, zones, observed, historyState }: Props) {
   const [zoom, setZoom] = useState(1);
   const [threshold, setThreshold] = useState(0.2);
+  const [rangeHours, setRangeHours] = useState<4 | 12 | 24>(24);
   const [exportLabel, setExportLabel] = useState("Export PNG");
   const svgRef = useRef<SVGSVGElement>(null);
   const model = useMemo(
-    () => buildModel(samples, zones, observed, zoom, threshold),
-    [samples, zones, observed, zoom, threshold],
+    () => buildModel(samples, candles, zones, observed, zoom, threshold, rangeHours),
+    [samples, candles, zones, observed, zoom, threshold, rangeHours],
   );
   const changeZoom = (direction: number) => {
     setZoom((current) => clamp(Number((current + direction * 0.5).toFixed(1)), 1, 4));
@@ -51,12 +55,17 @@ export function EstimatedLiquidationHeatmap({ symbol, samples, zones, observed }
     <section className="chart-card liquidation-map-card" id="estimated-liquidations">
       <div className="panel-heading liquidation-map-heading">
         <div>
-          <span className="section-kicker">MODELED DERIVATIVES RISK</span>
-          <h2>Liquidation heatmap · {symbol.replace("USDT", "/USDT")} <span className="model-badge">ESTIMATED</span></h2>
-          <p>Potential liquidation levels behind the live session price chart.</p>
+          <span className="section-kicker">MAPA DE LIQUIDACIONES ESTIMADAS</span>
+          <h2>Zonas donde podría concentrarse el riesgo de liquidación</h2>
+          <p>Las bandas estiman exposición por nivel de precio. Las velas históricas se dibujan encima para conservar el contexto real del mercado.</p>
         </div>
         <div className="map-heading-controls">
-          <span className="market-chip">BINANCE + BYBIT PERPETUAL</span>
+          <span className="market-chip">{symbol.replace("USDT", "/USDT")} PERPETUAL</span>
+          <div className="time-range-control" aria-label="Historical time range">
+            {([4, 12, 24] as const).map((hours) => (
+              <button key={hours} type="button" className={rangeHours === hours ? "active" : ""} onClick={() => setRangeHours(hours)}>{hours} h</button>
+            ))}
+          </div>
           <ChartToolbar
             zoom={zoom}
             onZoomIn={() => changeZoom(1)}
@@ -68,12 +77,13 @@ export function EstimatedLiquidationHeatmap({ symbol, samples, zones, observed }
         </div>
       </div>
       <div className="chart-legend liquidation-map-legend">
-        <span><i className="liquidation-scale" /> estimated leverage concentration</span>
-        <span><i className="candle-key up" /> price candles</span>
-        <span><i className="legend-dot liquidation-long" /> observed long</span>
-        <span><i className="legend-dot liquidation-short" /> observed short</span>
+        <span className="model-badge">ESTIMADO</span>
+        <span>{rangeHours} H HISTÓRICAS</span>
+        <span><i className="liquidation-scale" /> zonas estimadas</span>
+        <span><i className="candle-key up" /> velas reales Binance</span>
+        <span className={`history-state ${historyState}`}>{historyState === "live" ? "HISTORIAL LIVE" : historyState === "loading" ? "CARGANDO HISTORIAL" : "HISTORIAL NO DISPONIBLE"}</span>
         <label className="threshold-control">
-          LIQUIDITY THRESHOLD
+          UMBRAL
           <input
             aria-label="Liquidation heatmap threshold"
             type="range"
@@ -176,8 +186,8 @@ export function EstimatedLiquidationHeatmap({ symbol, samples, zones, observed }
         )}
       </div>
       <div className="model-disclaimer">
-        <b>ESTIMATED LEVELS</b>
-        <span>Public exchange APIs do not reveal each person&apos;s entry or leverage. This session model uses OI changes, funding, price and volatility; circles are observed liquidation events.</span>
+        <b>NIVELES ESTIMADOS</b>
+        <span>Las velas son datos históricos reales de Binance USD-M. Las bandas son un modelo propio basado en cambios de interés abierto, precio y escenarios de apalancamiento; no representan posiciones individuales publicadas por los exchanges.</span>
       </div>
     </section>
   );
@@ -185,29 +195,41 @@ export function EstimatedLiquidationHeatmap({ symbol, samples, zones, observed }
 
 function buildModel(
   samples: DerivativesSample[],
+  historicalCandles: HistoricalCandle[],
   zones: EstimatedLiquidationZone[],
   observed: LiquidationEvent[],
   zoom: number,
   threshold: number,
+  rangeHours: 4 | 12 | 24,
 ) {
-  if (samples.length < 2) return null;
-  const sampleCount = Math.max(2, Math.ceil(samples.length / zoom));
-  const visibleSamples = samples.slice(-sampleCount);
-  const end = visibleSamples.at(-1)?.ts ?? Date.now();
-  const start = visibleSamples[0].ts;
-  const lastPrice = visibleSamples.at(-1)?.price ?? 0;
-  const rangeRatio = 0.075 / zoom;
-  const minPrice = lastPrice * (1 - rangeRatio);
-  const maxPrice = lastPrice * (1 + rangeRatio);
+  const sourceCandles = historicalCandles.length >= 2
+    ? historicalCandles
+    : sessionCandles(samples);
+  if (sourceCandles.length < 2) return null;
+  const end = sourceCandles.at(-1)?.closeTime ?? Date.now();
+  const start = end - (rangeHours * 60 * 60 * 1_000) / zoom;
+  const visibleHistory = sourceCandles.filter((candle) => candle.closeTime >= start);
+  if (visibleHistory.length < 2) return null;
+  const lastPrice = samples.at(-1)?.price ?? visibleHistory.at(-1)?.close ?? 0;
+  const rangeRatio = 0.055 / Math.sqrt(zoom);
+  const minPrice = Math.min(
+    lastPrice * (1 - rangeRatio),
+    ...visibleHistory.map((candle) => candle.low),
+  );
+  const maxPrice = Math.max(
+    lastPrice * (1 + rangeRatio),
+    ...visibleHistory.map((candle) => candle.high),
+  );
   const plotHeight = PLOT_BOTTOM - PLOT.top;
   const candidates = zones.filter(
-    (zone) => zone.createdAt <= end && zone.liquidationPrice >= minPrice && zone.liquidationPrice <= maxPrice,
+    (zone) => zone.createdAt >= start && zone.createdAt <= end && zone.liquidationPrice >= minPrice && zone.liquidationPrice <= maxPrice,
   );
-  const exposures = candidates.map((zone) => decayedExposure(zone, end));
+  const halfLife = rangeHours * 60 * 60 * 1_000;
+  const exposures = candidates.map((zone) => decayedExposure(zone, end, halfLife));
   const ceiling = Math.max(1, percentile(exposures, 0.92));
-  const rowHeight = Math.max(5, Math.min(11, plotHeight / 58));
+  const rowHeight = Math.max(4, Math.min(9, plotHeight / 64));
   const bands = candidates.map((zone) => {
-    const exposure = decayedExposure(zone, end);
+    const exposure = decayedExposure(zone, end, halfLife);
     const intensity = Math.min(1, (exposure / ceiling) ** 0.55);
     const x = scale(Math.max(start, zone.createdAt), start, end, PLOT.left, PLOT_RIGHT);
     return {
@@ -223,7 +245,7 @@ function buildModel(
       intensity,
     };
   }).filter((band) => band.intensity >= threshold).sort((left, right) => left.intensity - right.intensity);
-  const candles = createCandles(visibleSamples, minPrice, maxPrice, start, end);
+  const candles = positionCandles(visibleHistory, minPrice, maxPrice, start, end);
   const observedPoints = observed
     .filter((event) => event.ts >= start && event.ts <= end && event.price >= minPrice && event.price <= maxPrice)
     .map((event, index) => ({
@@ -233,9 +255,9 @@ function buildModel(
       y: scale(event.price, maxPrice, minPrice, PLOT.top, PLOT_BOTTOM),
       radius: Math.min(9, 3 + Math.log10(Math.max(1, event.notional)) / 2),
     }));
-  const navigatorPoints = visibleSamples.map((sample, index) => {
-    const x = PLOT.left + ((PLOT_RIGHT - PLOT.left) * index) / Math.max(1, visibleSamples.length - 1);
-    const y = scale(sample.price, maxPrice, minPrice, HEIGHT - 64, HEIGHT - 22);
+  const navigatorPoints = visibleHistory.map((candle, index) => {
+    const x = PLOT.left + ((PLOT_RIGHT - PLOT.left) * index) / Math.max(1, visibleHistory.length - 1);
+    const y = scale(candle.close, maxPrice, minPrice, HEIGHT - 64, HEIGHT - 22);
     return `${x},${y}`;
   }).join(" ");
   return {
@@ -255,41 +277,45 @@ function buildModel(
 
 type ChartModel = NonNullable<ReturnType<typeof buildModel>>;
 
-function createCandles(
-  samples: DerivativesSample[],
+function positionCandles(
+  candles: HistoricalCandle[],
   minPrice: number,
   maxPrice: number,
   start: number,
   end: number,
 ) {
-  const targetCandles = Math.min(48, Math.max(1, Math.ceil(samples.length / 2)));
-  const groupSize = Math.max(1, Math.ceil(samples.length / targetCandles));
-  const groups = Array.from({ length: Math.ceil(samples.length / groupSize) }, (_, index) =>
-    samples.slice(index * groupSize, (index + 1) * groupSize),
-  ).filter((group) => group.length > 0);
-  const candleWidth = Math.max(3, Math.min(11, ((PLOT_RIGHT - PLOT.left) / Math.max(1, groups.length)) * 0.62));
-  return groups.map((group, index) => {
-    const open = group[0].price;
-    const close = group.at(-1)?.price ?? open;
-    const high = Math.max(...group.map((sample) => sample.price));
-    const low = Math.min(...group.map((sample) => sample.price));
-    const ts = group.at(-1)?.ts ?? start;
-    const openY = scale(open, maxPrice, minPrice, PLOT.top, PLOT_BOTTOM);
-    const closeY = scale(close, maxPrice, minPrice, PLOT.top, PLOT_BOTTOM);
+  const candleWidth = Math.max(2, Math.min(9, ((PLOT_RIGHT - PLOT.left) / Math.max(1, candles.length)) * 0.68));
+  return candles.map((candle, index) => {
+    const openY = scale(candle.open, maxPrice, minPrice, PLOT.top, PLOT_BOTTOM);
+    const closeY = scale(candle.close, maxPrice, minPrice, PLOT.top, PLOT_BOTTOM);
     return {
-      key: `${ts}-${index}`,
-      ts,
-      x: scale(ts, start, end, PLOT.left, PLOT_RIGHT),
-      open,
-      close,
-      high,
-      low,
-      highY: scale(high, maxPrice, minPrice, PLOT.top, PLOT_BOTTOM),
-      lowY: scale(low, maxPrice, minPrice, PLOT.top, PLOT_BOTTOM),
+      key: `${candle.openTime}-${index}`,
+      ts: candle.openTime,
+      x: scale(candle.openTime, start, end, PLOT.left, PLOT_RIGHT),
+      open: candle.open,
+      close: candle.close,
+      high: candle.high,
+      low: candle.low,
+      highY: scale(candle.high, maxPrice, minPrice, PLOT.top, PLOT_BOTTOM),
+      lowY: scale(candle.low, maxPrice, minPrice, PLOT.top, PLOT_BOTTOM),
       bodyY: Math.min(openY, closeY),
       bodyHeight: Math.max(2, Math.abs(closeY - openY)),
       width: candleWidth,
-      up: close >= open,
+      up: candle.close >= candle.open,
+    };
+  });
+}
+
+function sessionCandles(samples: DerivativesSample[]): HistoricalCandle[] {
+  return samples.slice(1).map((sample, index) => {
+    const previous = samples[index];
+    return {
+      openTime: previous.ts,
+      closeTime: sample.ts,
+      open: previous.price,
+      high: Math.max(previous.price, sample.price),
+      low: Math.min(previous.price, sample.price),
+      close: sample.price,
     };
   });
 }
@@ -301,7 +327,7 @@ function Grid() {
   })}{Array.from({ length: 9 }, (_, index) => {
     const x = PLOT.left + ((PLOT_RIGHT - PLOT.left) * index) / 8;
     return <line key={`v-${index}`} x1={x} y1={PLOT.top} x2={x} y2={PLOT_BOTTOM} stroke="#502060" strokeDasharray="3 7" opacity=".4" />;
-  })}<text x={PLOT.left} y="21" fill="#8f7aa3" fontSize="10">SESSION MODEL · RELATIVE CONCENTRATION</text></g>;
+  })}<text x={PLOT.left} y="21" fill="#8f7aa3" fontSize="10">VELAS HISTÓRICAS + CONCENTRACIÓN ESTIMADA</text></g>;
 }
 
 function IntensityScale({ maxExposure }: { maxExposure: number }) {
@@ -309,7 +335,7 @@ function IntensityScale({ maxExposure }: { maxExposure: number }) {
     <rect x="30" y={PLOT.top + 28} width="22" height={PLOT_BOTTOM - PLOT.top - 56} rx="4" fill="url(#liquidationScaleVertical)" />
     <text x="41" y={PLOT.top + 16} textAnchor="middle" fill="#9b8ba9">{compactMoney(maxExposure)}</text>
     <text x="41" y={PLOT_BOTTOM - 8} textAnchor="middle" fill="#75677f">0</text>
-    <text x="17" y={(PLOT.top + PLOT_BOTTOM) / 2} transform={`rotate(-90 17 ${(PLOT.top + PLOT_BOTTOM) / 2})`} textAnchor="middle" fill="#776681">MODELED EXPOSURE</text>
+    <text x="17" y={(PLOT.top + PLOT_BOTTOM) / 2} transform={`rotate(-90 17 ${(PLOT.top + PLOT_BOTTOM) / 2})`} textAnchor="middle" fill="#776681">EXPOSICIÓN ESTIMADA</text>
   </g>;
 }
 
