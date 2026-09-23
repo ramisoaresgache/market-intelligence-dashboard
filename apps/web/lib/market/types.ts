@@ -1,4 +1,21 @@
-export type Exchange = "binance" | "bybit";
+export type Exchange =
+  | "binance"
+  | "bybit"
+  | "okx"
+  | "mexc"
+  | "whitebit"
+  | "bingx"
+  | "bitunix";
+
+export const LIVE_EXCHANGES: Exchange[] = [
+  "binance",
+  "bybit",
+  "okx",
+  "mexc",
+  "whitebit",
+  "bingx",
+  "bitunix",
+];
 
 export type ConnectionState = "connecting" | "live" | "reconnecting" | "unavailable";
 
@@ -56,7 +73,33 @@ export interface MarketSnapshot {
   liquidations: LiquidationEvent[];
 }
 
+export interface MarketInstrument {
+  symbol: string;
+  baseCoin: string;
+  quoteCoin: "USDT";
+  exchanges: Exchange[];
+}
+
+export interface AggregatedOrderLevel extends OrderLevel {
+  exchanges: Partial<Record<Exchange, number>>;
+}
+
+export interface LiquidityLevel {
+  price: number;
+  bidNotional: number;
+  askNotional: number;
+}
+
+export interface LiquidityFrame {
+  symbol: string;
+  ts: number;
+  midpoint: number;
+  bucketSize: number;
+  levels: LiquidityLevel[];
+}
+
 export interface MarketViewState {
+  activeSymbol: string;
   symbols: string[];
   snapshots: Record<string, MarketSnapshot>;
   sources: SourceStatus[];
@@ -69,7 +112,10 @@ export type MarketEvent =
   | { type: "metrics"; data: MarketMetrics }
   | { type: "status"; data: SourceStatus };
 
-export type WorkerCommand = { type: "start" } | { type: "stop" };
+export type WorkerCommand =
+  | { type: "start"; symbol: string }
+  | { type: "set-symbol"; symbol: string }
+  | { type: "stop" };
 
 export type WorkerEvent =
   | { type: "snapshot"; data: MarketViewState }

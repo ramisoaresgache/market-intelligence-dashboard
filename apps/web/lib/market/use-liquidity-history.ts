@@ -1,64 +1,115 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { consolidateOrderBooks, type DepthLevel } from "./engine/visualization";
-import type { MarketSnapshot } from "./types";
+import { buildLiquidityFrame } from "./engine/aggregate";
+import {
+  loadLiquidityFrames,
+  pruneLiquidityFrames,
+  saveLiquidityFrame,
+} from "./history-db";
+import type { LiquidityFrame, NormalizedOrderBook } from "./types";
 
-export interface LiquidityFrame {
-  ts: number;
-  mid: number;
-  levels: DepthLevel[];
-}
+const SAMPLE_INTERVAL_MS = 5_000;
+const CENTRAL_REFRESH_MS = 60_000;
+const CENTRAL_HISTORY_HOURS = 4;
+export const LIQUIDITY_RETENTION_MS = 4 * 60 * 60 * 1000;
 
-type SymbolHistory = {
-  symbol: string;
+type HistoryState = {
+  key: string;
   frames: LiquidityFrame[];
 };
 
-const SAMPLE_INTERVAL_MS = 2_000;
-const MAX_FRAMES = 90;
+type CentralPayload = {
+  symbol: string;
+  exchange: string;
+  frames?: LiquidityFrame[];
+};
 
-export function useLiquidityHistory(
-  symbol: string,
-  snapshot: MarketSnapshot | undefined,
-): LiquidityFrame[] {
-  const [history, setHistory] = useState<SymbolHistory>({ symbol, frames: [] });
-  const lastSample = useRef({ symbol, ts: 0 });
+export function useLiquidityHistory(key: string, books: NormalizedOrderBook[]): LiquidityFrame[] {
+  const [localHistory, setLocalHistory] = useState<HistoryState>({ key, frames: [] });
+  const [centralHistory, setCentralHistory] = useState<HistoryState>({ key, frames: [] });
+  const booksRef = useRef<NormalizedOrderBook[]>(books);
 
   useEffect(() => {
-    if (lastSample.current.symbol !== symbol) {
-      lastSample.current = { symbol, ts: 0 };
-    }
-    if (!snapshot || snapshot.ts <= 0) {
-      setTimeout(() => setHistory({ symbol, frames: [] }), 0);
-      return;
-    }
-    if (snapshot.ts - lastSample.current.ts < SAMPLE_INTERVAL_MS) return;
+    booksRef.current = books;
+  }, [books]);
 
-    const book = consolidateOrderBooks(snapshot.orderBooks);
-    if (book.mid === null || !book.levels.length) return;
-    const frame: LiquidityFrame = {
-      ts: snapshot.ts,
-      mid: book.mid,
-      levels: [...book.levels]
-        .sort(
-          (left, right) =>
-            right.bidNotional + right.askNotional - (left.bidNotional + left.askNotional),
-        )
-        .slice(0, 100),
+  useEffect(() => {
+    let active = true;
+    let sampleCount = 0;
+    const since = Date.now() - LIQUIDITY_RETENTION_MS;
+
+    void loadLiquidityFrames(key, since)
+      .then((stored) => {
+        if (active) setLocalHistory({ key, frames: stored });
+      })
+      .catch(() => {
+        if (active) setLocalHistory({ key, frames: [] });
+      });
+
+    const timer = setInterval(() => {
+      const frame = buildLiquidityFrame(key, booksRef.current);
+      if (!frame) return;
+      const cutoff = Date.now() - LIQUIDITY_RETENTION_MS;
+      setLocalHistory((current) => ({
+        key,
+        frames: [
+          ...(current.key === key
+            ? current.frames.filter((item) => item.ts >= cutoff)
+            : []),
+          frame,
+        ],
+      }));
+      void saveLiquidityFrame(frame).catch(() => undefined);
+      sampleCount += 1;
+      if (sampleCount % 60 === 0) {
+        void pruneLiquidityFrames(cutoff).catch(() => undefined);
+      }
+    }, SAMPLE_INTERVAL_MS);
+
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [key]);
+
+  useEffect(() => {
+    let active = true;
+    let timer: number | undefined;
+    const [marketSymbol, rawExchange = "all"] = key.split("::");
+    const exchange = rawExchange || "all";
+
+    const loadCentral = async () => {
+      if (!marketSymbol) return;
+      try {
+        const params = new URLSearchParams({
+          symbol: marketSymbol,
+          exchange,
+          hours: String(CENTRAL_HISTORY_HOURS),
+        });
+        const response = await fetch(`/api/orderbook-history?${params}`, { cache: "no-store" });
+        const payload = (await response.json()) as CentralPayload & { error?: string };
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        if (active) {
+          setCentralHistory({
+            key,
+            frames: Array.isArray(payload.frames) ? payload.frames : [],
+          });
+        }
+      } catch {
+        if (active) setCentralHistory({ key, frames: [] });
+      }
     };
 
-    setTimeout(() => {
-      lastSample.current = { symbol, ts: snapshot.ts };
-      setHistory((current) => {
-        const frames = current.symbol === symbol ? current.frames : [];
-        return {
-          symbol,
-          frames: [...frames.slice(-(MAX_FRAMES - 1)), frame],
-        };
-      });
-    }, 0);
-  }, [snapshot, symbol]);
+    void loadCentral();
+    timer = window.setInterval(() => void loadCentral(), CENTRAL_REFRESH_MS);
+    return () => {
+      active = false;
+      if (timer !== undefined) window.clearInterval(timer);
+    };
+  }, [key]);
 
-  return history.symbol === symbol ? history.frames : [];
+  const local = localHistory.key === key ? localHistory.frames : [];
+  const central = centralHistory.key === key ? centralHistory.frames : [];
+  return [...central, ...local].sort((left, right) => left.ts - right.ts);
 }

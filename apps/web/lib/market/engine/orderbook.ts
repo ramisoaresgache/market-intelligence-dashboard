@@ -38,8 +38,6 @@ export class BinanceOrderBook {
 
     applyLevels(this.bids, event.b);
     applyLevels(this.asks, event.a);
-    pruneLevels(this.bids, true, 1_000);
-    pruneLevels(this.asks, false, 1_000);
     this.lastUpdateId = event.u;
     return true;
   }
@@ -136,19 +134,6 @@ export function applyLevels(target: Map<number, number>, levels: RawLevels): voi
 function replaceLevels(target: Map<number, number>, levels: RawLevels): void {
   target.clear();
   applyLevels(target, levels);
-}
-
-function pruneLevels(
-  target: Map<number, number>,
-  descending: boolean,
-  limit: number,
-): void {
-  if (target.size <= limit + 200) return;
-  const retained = [...target.entries()]
-    .sort(([left], [right]) => (descending ? right - left : left - right))
-    .slice(0, limit);
-  target.clear();
-  for (const [price, quantity] of retained) target.set(price, quantity);
 }
 
 function normalLevels(

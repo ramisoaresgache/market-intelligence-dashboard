@@ -1,289 +1,489 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { EstimatedLiquidationHeatmap } from "../components/charts/estimated-liquidation-heatmap";
-import { LiquidityHeatmap } from "../components/charts/liquidity-heatmap";
-import { consolidateOrderBooks } from "../lib/market/engine/visualization";
-import { useEstimatedLiquidations } from "../lib/market/use-estimated-liquidations";
-import { useHistoricalLiquidationMap } from "../lib/market/use-historical-liquidation-map";
-import { useLiquidityHistory } from "../lib/market/use-liquidity-history";
-import { useMarketEngine } from "../lib/market/use-market-engine";
-import type {
-  LiquidationEvent,
-  MarketSnapshot,
-  SourceStatus,
+import { useEffect, useMemo, useState } from "react";
+import { CapitalFlows } from "../components/capital-flows";
+import { ChartCaptureManager } from "../components/chart-capture-manager";
+import { LiquidationHeatmap } from "../components/liquidation-heatmap";
+import { LiquidationSummary } from "../components/liquidation-summary";
+import { LiquidityHeatmap } from "../components/liquidity-heatmap";
+import { MarketPulse } from "../components/market-pulse";
+import {
+  aggregateOrderBooks,
+  midpointFromBooks,
+  type ExchangeFilter,
+} from "../lib/market/engine/aggregate";
+import type { LiquidationMapSource } from "../lib/market/liquidation-model";
+import { DEFAULT_SYMBOL } from "../lib/market/symbols";
+import {
+  LIVE_EXCHANGES,
+  type AggregatedOrderLevel,
+  type Exchange,
+  type MarketInstrument,
+  type SourceStatus,
 } from "../lib/market/types";
+import { loadMarketUniverse } from "../lib/market/universe";
+import { useLiquidityHistory } from "../lib/market/use-liquidity-history";
+import { setMarketSymbol, useMarketEngine } from "../lib/market/use-market-engine";
 
-const compact = new Intl.NumberFormat("en-US", {
+const compact = new Intl.NumberFormat("es-AR", {
   notation: "compact",
   maximumFractionDigits: 2,
 });
-const price = new Intl.NumberFormat("en-US", {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
+const EMPTY_BOOKS: NonNullable<ReturnType<typeof useMarketEngine>["snapshots"][string]>["orderBooks"] = [];
+const LIQUIDATION_HOURS = [4, 12, 24] as const;
+const LIQUIDATION_SOURCES: Array<{ value: LiquidationMapSource; label: string }> = [
+  { value: "aggregate", label: "Binance + Bybit + OKX" },
+  { value: "binance", label: "Binance" },
+  { value: "bybit", label: "Bybit" },
+  { value: "okx", label: "OKX" },
+];
+const ORDERBOOK_SOURCES: ExchangeFilter[] = ["all", ...LIVE_EXCHANGES];
+const LIQUIDITY_WINDOWS = [
+  { label: "15 m", value: 15 * 60 * 1000 },
+  { label: "1 h", value: 60 * 60 * 1000 },
+  { label: "4 h", value: 4 * 60 * 60 * 1000 },
+] as const;
+const EXCHANGE_LABELS: Record<Exchange, string> = {
+  binance: "Binance",
+  bybit: "Bybit",
+  okx: "OKX",
+  mexc: "MEXC",
+  whitebit: "WhiteBIT",
+  bingx: "BingX",
+  bitunix: "Bitunix",
+};
+const QUICK_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT"];
+type DashboardSection = "market" | "liquidations" | "flows";
 
 export default function Dashboard() {
-  const { snapshots, sources, symbols } = useMarketEngine();
-  const [activeSymbol, setActiveSymbol] = useState("BTCUSDT");
-  const snapshot = snapshots[activeSymbol];
-  const history = useLiquidityHistory(activeSymbol, snapshot);
-  const liquidationModel = useEstimatedLiquidations(activeSymbol, snapshot);
-  const historicalLiquidations = useHistoricalLiquidationMap(activeSymbol);
-  const book = useMemo(
-    () => consolidateOrderBooks(snapshot?.orderBooks ?? []),
-    [snapshot?.orderBooks],
-  );
+  const { snapshots, sources } = useMarketEngine();
+  const [universe, setUniverse] = useState<MarketInstrument[]>([]);
+  const [selectedSymbol, setSelectedSymbol] = useState(DEFAULT_SYMBOL);
+  const [marketSearch, setMarketSearch] = useState("");
+  const [exchangeFilter, setExchangeFilter] = useState<ExchangeFilter>("all");
+  const [liquidityWindowMs, setLiquidityWindowMs] = useState<number>(LIQUIDITY_WINDOWS[1].value);
+  const [liquidationHours, setLiquidationHours] = useState<(typeof LIQUIDATION_HOURS)[number]>(24);
+  const [liquidationSource, setLiquidationSource] = useState<LiquidationMapSource>("aggregate");
+  const [activeSection, setActiveSection] = useState<DashboardSection>("market");
+
+  useEffect(() => {
+    let active = true;
+    void loadMarketUniverse().then((markets) => {
+      if (active) setUniverse(markets);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    setMarketSymbol(selectedSymbol);
+  }, [selectedSymbol]);
+
+  const snapshot = snapshots[selectedSymbol];
+  const books = snapshot?.orderBooks ?? EMPTY_BOOKS;
   const bybit = snapshot?.metrics.find((metric) => metric.exchange === "bybit");
   const binance = snapshot?.metrics.find((metric) => metric.exchange === "binance");
-  const mark = bybit?.markPrice ?? bybit?.lastPrice ?? book.mid;
-  const connection = overallState(sources);
-  const asset = activeSymbol.replace("USDT", "");
-
-  return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <a className="brand" href="#overview" aria-label="Market Intelligence home">
-          <span className="brand-mark"><i /><i /><i /></span>
-          <span><b>MI</b><small>MARKET INTEL</small></span>
-        </a>
-        <nav aria-label="Dashboard sections">
-          <NavLink href="#overview" icon="grid" label="Overview" active />
-          <NavLink href="#liquidity" icon="waves" label="Liquidity" />
-          <NavLink href="#liquidations" icon="bolt" label="Liquidations" />
-          <NavLink href="#news" icon="news" label="News & Macro" />
-        </nav>
-        <div className="sidebar-status">
-          <span className={`system-pulse ${connection}`} />
-          <div><b>{connection === "live" ? "SYSTEM LIVE" : connection.toUpperCase()}</b><small>Browser engine · 150ms UI</small></div>
-        </div>
-        <p className="sidebar-note">Read-only market intelligence.<br />No trading. No account required.</p>
-      </aside>
-
-      <div className="workspace">
-        <header className="terminal-header">
-          <div className="market-ticker" aria-label="Tracked markets">
-            {symbols.map((symbol) => (
-              <TickerItem
-                key={symbol}
-                symbol={symbol}
-                snapshot={snapshots[symbol]}
-                active={symbol === activeSymbol}
-                onSelect={() => setActiveSymbol(symbol)}
-              />
-            ))}
-          </div>
-          <div className="source-cluster">
-            {sources.map((source) => <SourcePill key={source.exchange} source={source} />)}
-          </div>
-        </header>
-
-        <main className="dashboard" id="overview">
-          <section className="market-hero">
-            <div className="market-title">
-              <div className={`asset-orb ${asset.toLowerCase()}`}>{asset.slice(0, 1)}</div>
-              <div>
-                <span className="section-kicker">{activeSymbol} · PERPETUAL</span>
-                <h1>{asset}<em>/USDT</em></h1>
-                <p>Consolidated public data · Binance USD-M + Bybit Linear</p>
-              </div>
-            </div>
-            <div className="live-price">
-              <small>MARK PRICE</small>
-              <strong>{mark == null ? "—" : `$${price.format(mark)}`}</strong>
-              <span className={snapshot?.ts ? "fresh" : "waiting"}>
-                <i /> {snapshot?.ts ? `updated ${time(snapshot.ts)}` : "awaiting market data"}
-              </span>
-            </div>
-          </section>
-
-          <section className="metric-ribbon" aria-label={`${activeSymbol} live metrics`}>
-            <HeroMetric label="BEST BID" value={formatPrice(book.bestBid)} tone="bid" foot="cross-venue" />
-            <HeroMetric label="BEST ASK" value={formatPrice(book.bestAsk)} tone="ask" foot="cross-venue" />
-            <HeroMetric
-              label={book.crossed ? "CROSSED MARKET" : "SPREAD"}
-              value={formatSpread(book.crossVenueSpread)}
-              tone={book.crossed ? "warning" : ""}
-              foot={book.crossed ? "quotes overlap across venues" : "best ask − best bid"}
-            />
-            <HeroMetric label="OPEN INTEREST" value={money(bybit?.openInterestValue)} foot="Bybit notional" />
-            <HeroMetric label="BINANCE OI" value={number(binance?.openInterest)} foot="contracts" />
-            <HeroMetric label="FUNDING" value={funding(bybit?.fundingRate)} tone={fundingTone(bybit?.fundingRate)} foot={bybit?.nextFundingTime ? `next ${time(bybit.nextFundingTime)}` : "Bybit"} />
-          </section>
-
-          <section className="dashboard-grid market-maps">
-            <LiquidityHeatmap
-              symbol={activeSymbol}
-              history={history}
-            />
-            <EstimatedLiquidationHeatmap
-              symbol={activeSymbol}
-              samples={liquidationModel.samples}
-              candles={historicalLiquidations.candles}
-              zones={[...historicalLiquidations.zones, ...liquidationModel.zones]}
-              observed={snapshot?.liquidations ?? []}
-              historyState={historicalLiquidations.state}
-            />
-          </section>
-
-          <section className="lower-grid" id="liquidations">
-            <LiquidationsPanel symbol={activeSymbol} snapshot={snapshot} />
-            <MarketQualityPanel sources={sources} snapshot={snapshot} />
-            <section className="news-panel" id="news">
-              <div className="panel-heading compact-heading">
-                <div>
-                  <span className="section-kicker">NEWS & MACRO</span>
-                  <h2>Event intelligence</h2>
-                </div>
-                <span className="planned-badge">PLANNED</span>
-              </div>
-              <div className="empty-module">
-                <NewsIcon />
-                <strong>Official sources not connected yet</strong>
-                <p>FED, SEC, GDELT and macro feeds belong to the next scoped module. No synthetic headlines are shown.</p>
-              </div>
-            </section>
-          </section>
-
-          <footer className="app-footer">
-            <span>MARKET INTELLIGENCE / PUBLIC MVP</span>
-            <span>Order book data is observed · liquidation zones are explicitly modeled estimates</span>
-          </footer>
-        </main>
-      </div>
-    </div>
+  const okx = snapshot?.metrics.find((metric) => metric.exchange === "okx");
+  const currentPrice =
+    bybit?.markPrice ??
+    binance?.markPrice ??
+    okx?.markPrice ??
+    bybit?.lastPrice ??
+    midpointFromBooks(books);
+  const aggregated = useMemo(
+    () => aggregateOrderBooks(books, exchangeFilter, undefined, 24),
+    [books, exchangeFilter],
   );
-}
-
-function TickerItem({ symbol, snapshot, active, onSelect }: { symbol: string; snapshot?: MarketSnapshot; active: boolean; onSelect: () => void }) {
-  const metrics = snapshot?.metrics.find((item) => item.exchange === "bybit");
-  const value = metrics?.markPrice ?? metrics?.lastPrice;
-  return (
-    <button type="button" className={`ticker-item ${active ? "active" : ""}`} onClick={onSelect}>
-      <span>{symbol.replace("USDT", "")}</span>
-      <b>{value == null ? "—" : `$${price.format(value)}`}</b>
-      <i className={snapshot?.ts ? "online" : ""} />
-    </button>
+  const liquidityBooks = useMemo(
+    () => exchangeFilter === "all" ? books : books.filter((book) => book.exchange === exchangeFilter),
+    [books, exchangeFilter],
   );
-}
-
-function SourcePill({ source }: { source: SourceStatus }) {
-  return (
-    <span className={`source-pill ${source.state}`} title={source.detail} data-testid={`source-${source.exchange}`}>
-      <i /> {source.exchange} <b>{source.state}</b>
-    </span>
-  );
-}
-
-function NavLink({ href, icon, label, active = false }: { href: string; icon: string; label: string; active?: boolean }) {
-  return <a href={href} className={active ? "active" : ""}><span className={`nav-icon ${icon}`} />{label}</a>;
-}
-
-function HeroMetric({ label, value, foot, tone = "" }: { label: string; value: string; foot: string; tone?: string }) {
-  return <div className="hero-stat"><span>{label}</span><b className={tone}>{value}</b><small>{foot}</small></div>;
-}
-
-function LiquidationsPanel({ symbol, snapshot }: { symbol: string; snapshot?: MarketSnapshot }) {
+  const liquidityHistoryKey = `${selectedSymbol}::${exchangeFilter}`;
+  const liquidityFrames = useLiquidityHistory(liquidityHistoryKey, liquidityBooks);
+  const liquidityPrice = midpointFromBooks(liquidityBooks) ?? currentPrice;
   const liquidations = snapshot?.liquidations ?? [];
-  const longTotal = sumLiquidations(liquidations, "long");
-  const shortTotal = sumLiquidations(liquidations, "short");
-  const max = Math.max(longTotal, shortTotal, 1);
+  const availableQuick = QUICK_SYMBOLS.filter((symbol) =>
+    universe.length ? universe.some((market) => market.symbol === symbol) : true,
+  );
+  const displayedMarkets: MarketInstrument[] = universe.length
+    ? universe
+    : [{ symbol: DEFAULT_SYMBOL, baseCoin: "BTC", quoteCoin: "USDT", exchanges: [...LIVE_EXCHANGES] }];
+  const normalizedSearch = marketSearch.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const filteredMarkets = normalizedSearch
+    ? displayedMarkets.filter(
+        (market) => market.symbol.includes(normalizedSearch) || market.baseCoin.includes(normalizedSearch),
+      )
+    : displayedMarkets;
+  const selectedMarket = displayedMarkets.find((market) => market.symbol === selectedSymbol);
+  const pickerMarkets =
+    selectedMarket && !filteredMarkets.some((market) => market.symbol === selectedSymbol)
+      ? [selectedMarket, ...filteredMarkets]
+      : filteredMarkets;
+
+  function selectFirstSearchResult() {
+    const first = filteredMarkets[0];
+    if (!first) return;
+    setSelectedSymbol(first.symbol);
+    setMarketSearch("");
+  }
+
   return (
-    <section className="data-panel liquidations-panel">
-      <div className="panel-heading compact-heading">
-        <div><span className="section-kicker">OBSERVED EVENTS</span><h2>Live liquidations</h2></div>
-        <span className="event-count">{liquidations.length} / 100</span>
-      </div>
-      <div className="liquidation-balance">
-        <div><span>LONGS</span><b className="ask">{money(longTotal)}</b><i><em style={{ width: `${(longTotal / max) * 100}%` }} /></i></div>
-        <div><span>SHORTS</span><b className="bid">{money(shortTotal)}</b><i><em style={{ width: `${(shortTotal / max) * 100}%` }} /></i></div>
-      </div>
-      <div className="event-list">
-        {liquidations.length ? [...liquidations].reverse().slice(0, 7).map((event, index) => (
-          <LiquidationRow key={`${event.exchange}-${event.ts}-${index}`} event={event} />
-        )) : <div className="list-empty"><span className="pulse-dot" />Listening for {symbol} liquidations…</div>}
-      </div>
-    </section>
+    <main>
+      <ChartCaptureManager />
+
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">MERCADOS DE DERIVADOS · PERPETUOS</p>
+          <h1>Market Intelligence</h1>
+        </div>
+        <div className="status-cluster">
+          {sources.map((source) => (
+            <span
+              className={`source ${source.connected ? "up" : "down"}`}
+              key={source.exchange}
+              title={source.detail}
+            >
+              <i /> {EXCHANGE_LABELS[source.exchange]} · {connectionLabel(source)}
+            </span>
+          ))}
+          <span className="public-badge">DATOS PÚBLICOS · $0</span>
+        </div>
+      </header>
+
+      <section className="selector-panel">
+        <div className="selector-copy">
+          <span className="kicker">MERCADO</span>
+          <h2>Elegí una moneda y analizá el mercado en vivo.</h2>
+          <p>
+            La página combina fuentes públicas de varios exchanges para el perpetuo USDT seleccionado.
+            Sólo se abren los feeds pesados del par activo para mantener la interfaz rápida aunque el
+            universo tenga cientos de mercados.
+          </p>
+        </div>
+        <div className="market-picker">
+          <label htmlFor="market-search">Buscar par</label>
+          <input
+            id="market-search"
+            type="search"
+            value={marketSearch}
+            placeholder="BTC, ETH, SOL…"
+            onChange={(event) => setMarketSearch(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") selectFirstSearchResult();
+            }}
+          />
+          <label htmlFor="market-select">Par</label>
+          <select
+            id="market-select"
+            value={selectedSymbol}
+            onChange={(event) => {
+              setSelectedSymbol(event.target.value);
+              setMarketSearch("");
+            }}
+          >
+            {pickerMarkets.map((market) => (
+              <option key={market.symbol} value={market.symbol}>
+                {market.baseCoin}/USDT
+              </option>
+            ))}
+          </select>
+          <small>
+            {universe.length
+              ? `${filteredMarkets.length} de ${universe.length} mercados`
+              : "Cargando mercados disponibles…"}
+          </small>
+        </div>
+      </section>
+
+      <nav className="quick-markets" aria-label="Mercados rápidos">
+        {availableQuick.map((symbol) => (
+          <button
+            key={symbol}
+            type="button"
+            className={selectedSymbol === symbol ? "active" : ""}
+            onClick={() => {
+              setSelectedSymbol(symbol);
+              setMarketSearch("");
+            }}
+          >
+            {symbol.replace("USDT", "")}
+          </button>
+        ))}
+      </nav>
+
+      <nav className="dashboard-sections" aria-label="Secciones del dashboard">
+        <button
+          type="button"
+          className={activeSection === "market" ? "active" : ""}
+          onClick={() => setActiveSection("market")}
+        >
+          Mercado y mapas
+          <small>Liquidaciones estimadas + order book</small>
+        </button>
+        <button
+          type="button"
+          className={activeSection === "liquidations" ? "active" : ""}
+          onClick={() => setActiveSection("liquidations")}
+        >
+          Liquidaciones observadas
+          <small>Ventanas 1 h, 4 h, 12 h y 24 h</small>
+        </button>
+        <button
+          type="button"
+          className={activeSection === "flows" ? "active" : ""}
+          onClick={() => setActiveSection("flows")}
+        >
+          Flujos y reservas
+          <small>Exchanges, ETF y movimientos de BTC</small>
+        </button>
+      </nav>
+
+      <section className="market-hero">
+        <div className="market-title">
+          <div className="asset-icon">{selectedSymbol.slice(0, 1)}</div>
+          <div>
+            <span className="kicker">PERPETUO USDT</span>
+            <h2>
+              {selectedSymbol.replace("USDT", "")}
+              <small>/USDT</small>
+            </h2>
+          </div>
+        </div>
+        <div className="price-block">
+          <span>PRECIO DE MARCA</span>
+          <strong>{currentPrice == null ? "—" : `$${formatPrice(currentPrice)}`}</strong>
+          <small>{snapshot?.ts ? `Actualizado ${formatTime(snapshot.ts)}` : "Esperando datos…"}</small>
+        </div>
+        <MarketPulse symbol={selectedSymbol} currentPrice={currentPrice} />
+      </section>
+
+      {activeSection === "market" ? <><section className="dashboard-grid">
+        <article className="panel heatmap-panel">
+          <div className="panel-head liquidation-panel-head">
+            <div>
+              <span className="kicker">MAPA DE LIQUIDACIONES ESTIMADAS</span>
+              <h3>Zonas donde podría concentrarse el riesgo de liquidación</h3>
+              <p>
+                Las bandas estiman exposición por nivel de precio a partir de velas e interés abierto
+                histórico. Las velas se dibujan encima para conservar el contexto real del mercado.
+              </p>
+            </div>
+            <div className="map-controls">
+              <div className="segmented">
+                {LIQUIDATION_SOURCES.map((option) => (
+                  <button
+                    type="button"
+                    key={option.value}
+                    className={liquidationSource === option.value ? "active" : ""}
+                    onClick={() => setLiquidationSource(option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <div className="segmented">
+                {LIQUIDATION_HOURS.map((hours) => (
+                  <button
+                    type="button"
+                    key={hours}
+                    className={liquidationHours === hours ? "active" : ""}
+                    onClick={() => setLiquidationHours(hours)}
+                  >
+                    {hours} h
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <LiquidationHeatmap
+            symbol={selectedSymbol}
+            hours={liquidationHours}
+            source={liquidationSource}
+          />
+        </article>
+
+        <article className="panel orderbook-panel">
+          <div className="panel-head compact-head">
+            <div>
+              <span className="kicker">LIBRO DE ÓRDENES AGREGADO</span>
+              <h3>Profundidad visible</h3>
+            </div>
+            <div className="segmented exchange-filter">
+              {ORDERBOOK_SOURCES.map((exchange) => (
+                <button
+                  type="button"
+                  key={exchange}
+                  className={exchangeFilter === exchange ? "active" : ""}
+                  onClick={() => setExchangeFilter(exchange)}
+                >
+                  {exchange === "all" ? "Todos" : EXCHANGE_LABELS[exchange]}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="bucket-line">
+            Agrupación del libro: <b suppressHydrationWarning>{formatPrice(aggregated.bucketSize)}</b>
+          </div>
+          <div className="orderbook-columns">
+            <OrderSide title="Ventas" levels={aggregated.asks} side="ask" />
+            <OrderSide title="Compras" levels={aggregated.bids} side="bid" />
+          </div>
+        </article>
+      </section>
+
+      <section className="panel liquidity-history-panel">
+        <div className="panel-head liquidation-panel-head">
+          <div>
+            <span className="kicker">HEATMAP DEL LIBRO DE ÓRDENES</span>
+            <h3>Liquidez límite visible a través del tiempo</h3>
+            <p>
+              El navegador conserva muestras locales de 5 s y las combina con snapshots centrales de
+              Cloudflare para mostrar continuidad histórica sin perder el detalle del momento actual.
+            </p>
+          </div>
+          <div className="map-controls">
+            <div className="segmented">
+              {ORDERBOOK_SOURCES.map((exchange) => (
+                <button
+                  type="button"
+                  key={`heatmap-${exchange}`}
+                  className={exchangeFilter === exchange ? "active" : ""}
+                  onClick={() => setExchangeFilter(exchange)}
+                >
+                  {exchange === "all" ? "Todos" : EXCHANGE_LABELS[exchange]}
+                </button>
+              ))}
+            </div>
+            <div className="segmented">
+              {LIQUIDITY_WINDOWS.map((window) => (
+                <button
+                  type="button"
+                  key={window.value}
+                  className={liquidityWindowMs === window.value ? "active" : ""}
+                  onClick={() => setLiquidityWindowMs(window.value)}
+                >
+                  {window.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <LiquidityHeatmap
+          symbol={selectedSymbol}
+          frames={liquidityFrames}
+          windowMs={liquidityWindowMs}
+          currentPrice={liquidityPrice}
+        />
+        <p className="panel-footnote liquidity-footnote">
+          Órdenes limit visibles y cancelables. El histórico fino se conserva localmente en IndexedDB;
+          Cloudflare aporta snapshots de un minuto para continuidad 24/7 cuando existe cobertura central.
+        </p>
+      </section></> : null}
+
+      {activeSection === "liquidations" ? <section className="liquidation-grid section-view">
+        <LiquidationSummary symbol={selectedSymbol} liquidations={liquidations} />
+
+        <article className="panel recent-liquidations">
+          <div className="panel-head compact-head">
+            <div>
+              <span className="kicker">ÚLTIMOS EVENTOS</span>
+              <h3>Liquidaciones en vivo</h3>
+            </div>
+          </div>
+          <div className="liquidation-table">
+            <div className="table-row table-header">
+              <span>Hora</span>
+              <span>Fuente</span>
+              <span>Posición</span>
+              <span>Precio</span>
+              <span>Nocional</span>
+            </div>
+            {[...liquidations]
+              .reverse()
+              .slice(0, 12)
+              .map((item, index) => (
+                <div className="table-row" key={`${item.exchange}-${item.ts}-${index}`}>
+                  <span>{formatTime(item.ts)}</span>
+                  <span className="exchange-name">{EXCHANGE_LABELS[item.exchange]}</span>
+                  <span className={item.side === "long" ? "negative" : "positive"}>
+                    {item.side === "long" ? "Largo" : "Corto"}
+                  </span>
+                  <span>{formatPrice(item.price)}</span>
+                  <span>{formatMoney(item.notional)}</span>
+                </div>
+              ))}
+            {!liquidations.length && (
+              <div className="empty-row">Esperando liquidaciones observadas…</div>
+            )}
+          </div>
+        </article>
+      </section> : null}
+
+      {activeSection === "flows" ? <div className="section-view"><CapitalFlows /></div> : null}
+
+      <footer>
+        <span>INTELIGENCIA DE MERCADO · SOLO LECTURA</span>
+        <span>
+          El mapa de liquidaciones es un modelo estimado con datos públicos, no una lista de
+          posiciones individuales ni una garantía de liquidaciones futuras.
+        </span>
+      </footer>
+    </main>
   );
 }
 
-function LiquidationRow({ event }: { event: LiquidationEvent }) {
+function OrderSide({
+  title,
+  levels,
+  side,
+}: {
+  title: string;
+  levels: AggregatedOrderLevel[];
+  side: "bid" | "ask";
+}) {
+  const maxNotional = Math.max(1, ...levels.map((level) => level.notional));
   return (
-    <div className="event-row">
-      <time>{time(event.ts)}</time>
-      <span className={`side-tag ${event.side}`}>{event.side}</span>
-      <b>{money(event.notional)}</b>
-      <span>@ {formatPrice(event.price)}</span>
-      <small>{event.exchange} · {event.sourceQuality}</small>
+    <div className={`order-side ${side}`}>
+      <div className="order-side-title">
+        <span>{title}</span>
+        <span>Nocional</span>
+      </div>
+      {levels.slice(0, 16).map((level) => (
+        <div className="order-row" key={`${side}-${level.price}`}>
+          <div
+            className="depth-bar"
+            style={{ width: `${Math.max(2, (level.notional / maxNotional) * 100)}%` }}
+          />
+          <span>{formatPrice(level.price)}</span>
+          <b>{formatMoney(level.notional)}</b>
+        </div>
+      ))}
+      {!levels.length && <div className="empty-row">Esperando libro…</div>}
     </div>
   );
 }
 
-function MarketQualityPanel({ sources, snapshot }: { sources: SourceStatus[]; snapshot?: MarketSnapshot }) {
-  return (
-    <section className="data-panel quality-panel">
-      <div className="panel-heading compact-heading"><div><span className="section-kicker">SOURCE HEALTH</span><h2>Data quality</h2></div></div>
-      <div className="quality-list">
-        {sources.map((source) => {
-          const hasBook = snapshot?.orderBooks.some((book) => book.exchange === source.exchange);
-          return (
-            <div key={source.exchange}>
-              <span className={`health-light ${source.connected ? "online" : ""}`} />
-              <p><b>{source.exchange}</b><small>{source.detail ?? source.state}</small></p>
-              <em>{hasBook ? "BOOK LIVE" : source.state.toUpperCase()}</em>
-            </div>
-          );
-        })}
-        <div><span className="health-light online" /><p><b>UI publisher</b><small>Worker → React snapshots</small></p><em>150 MS</em></div>
-      </div>
-      <p className="quality-note">Binance liquidations are partial snapshots. Bybit <code>allLiquidation</code> is shown as all according to source coverage.</p>
-    </section>
-  );
+function connectionLabel(source: SourceStatus): string {
+  if (source.state === "live") return "en vivo";
+  if (source.state === "reconnecting") return "reconectando";
+  if (source.state === "unavailable") return "no disponible";
+  return "conectando";
 }
 
-function NewsIcon() {
-  return <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M10 9h25a3 3 0 0 1 3 3v27H13a3 3 0 0 1-3-3V9Zm0 25H7a3 3 0 0 0 3 3m7-20h14M17 23h14M17 29h9" /></svg>;
+function formatMoney(value?: number | null): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return `$${compact.format(value)}`;
 }
 
-function overallState(sources: SourceStatus[]): "connecting" | "live" | "reconnecting" {
-  if (sources.length > 0 && sources.every((source) => source.connected)) return "live";
-  if (sources.some((source) => source.state === "reconnecting")) return "reconnecting";
-  return "connecting";
+function formatPrice(value?: number | null): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  const decimals = value >= 1000 ? 2 : value >= 1 ? 4 : 8;
+  return value.toLocaleString("es-AR", { maximumFractionDigits: decimals });
 }
 
-function sumLiquidations(events: LiquidationEvent[], side: "long" | "short"): number {
-  return events.filter((event) => event.side === side).reduce((sum, event) => sum + event.notional, 0);
-}
-
-function formatPrice(value: number | null | undefined): string {
-  return value == null ? "—" : `$${price.format(value)}`;
-}
-
-function formatSpread(value: number | null): string {
-  if (value === null) return "—";
-  const prefix = value < 0 ? "−" : "";
-  return `${prefix}$${price.format(Math.abs(value))}`;
-}
-
-function money(value?: number | null): string {
-  return value == null ? "—" : `$${compact.format(value)}`;
-}
-
-function number(value?: number | null): string {
-  return value == null ? "—" : compact.format(value);
-}
-
-function funding(value?: number | null): string {
-  return value == null ? "—" : `${(value * 100).toFixed(4)}%`;
-}
-
-function fundingTone(value?: number | null): string {
-  if (value == null || value === 0) return "";
-  return value > 0 ? "positive" : "negative";
-}
-
-function time(timestamp: number): string {
-  return new Intl.DateTimeFormat("en-GB", {
+function formatTime(timestamp: number): string {
+  return new Intl.DateTimeFormat("es-AR", {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
