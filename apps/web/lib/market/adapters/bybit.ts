@@ -1,5 +1,5 @@
 import { BybitOrderBook, SequenceGapError, type BybitDepthData } from "../engine/orderbook";
-import { normalizeSymbol } from "../symbols";
+import { MARKET_SYMBOLS } from "../symbols";
 import type { LiquidationEvent, MarketMetrics } from "../types";
 import {
   BrowserExchangeAdapter,
@@ -23,17 +23,16 @@ export class BybitAdapter extends BrowserExchangeAdapter {
   private socket: WebSocket | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private readonly books = new Map<string, BybitOrderBook>();
-  private readonly symbol: string;
+  private lastStatusAt = 0;
 
-  constructor(emit: MarketEventSink, symbol: string) {
+  constructor(emit: MarketEventSink) {
     super("bybit", emit);
-    this.symbol = normalizeSymbol(symbol);
   }
 
   start(): void {
     if (this.active) return;
     this.active = true;
-    this.status({ connected: false, state: "connecting", detail: "Abriendo flujo público" });
+    this.status({ connected: false, state: "connecting", detail: "Opening public stream" });
     this.connect(0);
   }
 
@@ -41,7 +40,7 @@ export class BybitAdapter extends BrowserExchangeAdapter {
     super.stop();
     if (this.heartbeatTimer !== null) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = null;
-    this.socket?.close(1000, "mercado cambiado");
+    this.socket?.close(1000, "worker stopped");
     this.socket = null;
     this.books.clear();
   }
@@ -52,17 +51,16 @@ export class BybitAdapter extends BrowserExchangeAdapter {
     this.socket = socket;
 
     socket.onopen = () => {
-      const topics = [
-        `orderbook.50.${this.symbol}`,
-        `allLiquidation.${this.symbol}`,
-        `tickers.${this.symbol}`,
-      ];
+      const topics = MARKET_SYMBOLS.flatMap((symbol) => [
+        `orderbook.50.${symbol}`,
+        `allLiquidation.${symbol}`,
+        `tickers.${symbol}`,
+      ]);
       socket.send(JSON.stringify({ op: "subscribe", args: topics }));
       this.status({
-        connected: true,
-        state: "live",
-        lastMessageAt: Date.now(),
-        detail: "Flujo lineal público activo",
+        connected: false,
+        state: "connecting",
+        detail: "Awaiting subscription acknowledgement",
       });
       this.heartbeatTimer = setInterval(() => {
         if (socket.readyState === WebSocket.OPEN) {
@@ -73,21 +71,22 @@ export class BybitAdapter extends BrowserExchangeAdapter {
 
     socket.onmessage = (message) => {
       try {
-        this.handleMessage(parseBybitPayload(message.data));
-        this.status({
-          connected: true,
-          state: "live",
-          lastMessageAt: Date.now(),
-          detail: "Flujo lineal público activo",
-        });
+        const payload = parseBybitPayload(message.data);
+        if (payload.op === "subscribe" && payload.success !== true) {
+          throw new SubscriptionError("Bybit rejected the public topic subscription");
+        }
+        this.handleMessage(payload);
+        if (payload.op === "subscribe" || payload.topic) this.touch();
       } catch (error) {
         this.status({
           connected: false,
           state: "reconnecting",
           lastMessageAt: Date.now(),
-          detail: error instanceof Error ? error.message : "Mensaje inválido",
+          detail: error instanceof Error ? error.message : "Invalid stream message",
         });
-        if (error instanceof SequenceGapError) socket.close(1011, "salto en secuencia del libro");
+        if (error instanceof SequenceGapError || error instanceof SubscriptionError) {
+          socket.close(1011, "public stream resync");
+        }
       }
     };
 
@@ -97,7 +96,7 @@ export class BybitAdapter extends BrowserExchangeAdapter {
       this.heartbeatTimer = null;
       if (this.socket === socket) this.socket = null;
       this.books.clear();
-      this.status({ connected: false, state: "reconnecting", detail: "Reintentando conexión" });
+      this.status({ connected: false, state: "reconnecting", detail: "Retrying public stream" });
       this.scheduleReconnect((next) => this.connect(next), attempt);
     };
   }
@@ -106,7 +105,7 @@ export class BybitAdapter extends BrowserExchangeAdapter {
     const topic = payload.topic ?? "";
     if (topic.startsWith("orderbook.")) {
       const data = payload.data as BybitDepthData;
-      if (!data || data.s !== this.symbol) return;
+      if (!data || typeof data.s !== "string") return;
       const book = this.books.get(data.s) ?? new BybitOrderBook();
       this.books.set(data.s, book);
       if (book.apply(payload.type ?? "", data)) {
@@ -116,37 +115,49 @@ export class BybitAdapter extends BrowserExchangeAdapter {
         });
       }
     } else if (topic.startsWith("allLiquidation.")) {
-      for (const liquidation of parseBybitLiquidations(payload, this.symbol)) {
+      for (const liquidation of parseBybitLiquidations(payload)) {
         this.emit({ type: "liquidation", data: liquidation });
       }
     } else if (topic.startsWith("tickers.")) {
       const metrics = parseBybitTicker(payload);
-      if (metrics && metrics.symbol === this.symbol) this.emit({ type: "metrics", data: metrics });
+      if (metrics) this.emit({ type: "metrics", data: metrics });
     }
   }
+
+  private touch(): void {
+    const now = Date.now();
+    if (now - this.lastStatusAt < 1_000) return;
+    this.lastStatusAt = now;
+    this.status({
+      connected: true,
+      state: "live",
+      lastMessageAt: now,
+      detail: "Public linear topics acknowledged and live",
+    });
+  }
 }
+
+class SubscriptionError extends Error {}
 
 export function parseBybitPayload(raw: unknown): BybitPayload {
   const decoded = typeof raw === "string" ? JSON.parse(raw) : raw;
   if (typeof decoded !== "object" || decoded === null || Array.isArray(decoded)) {
-    throw new Error("Se esperaba un objeto JSON de Bybit");
+    throw new Error("Expected a Bybit JSON object");
   }
   return decoded as BybitPayload;
 }
 
-export function parseBybitLiquidations(payload: BybitPayload, symbolFilter?: string): LiquidationEvent[] {
+export function parseBybitLiquidations(payload: BybitPayload): LiquidationEvent[] {
   const data = Array.isArray(payload.data) ? payload.data : [payload.data];
-  const normalizedFilter = symbolFilter ? normalizeSymbol(symbolFilter) : null;
   return data.flatMap((value) => {
     if (!isRecord(value) || typeof value.s !== "string") return [];
-    const symbol = value.s.toUpperCase();
-    if (!symbol.endsWith("USDT") || (normalizedFilter && symbol !== normalizedFilter)) return [];
+    if (!MARKET_SYMBOLS.includes(value.s as (typeof MARKET_SYMBOLS)[number])) return [];
     const price = Number(value.p);
     const qty = Number(value.v);
     if (!Number.isFinite(price) || !Number.isFinite(qty)) return [];
     return [{
       exchange: "bybit" as const,
-      symbol,
+      symbol: value.s,
       ts: Number(value.T ?? payload.ts ?? Date.now()),
       side: value.S === "Buy" ? ("long" as const) : ("short" as const),
       price,

@@ -1,32 +1,24 @@
-import { DEFAULT_SYMBOL, normalizeSymbol } from "./symbols";
-import { LIVE_EXCHANGES, type MarketViewState, type SourceStatus, type WorkerCommand, type WorkerEvent } from "./types";
+import { MARKET_SYMBOLS } from "./symbols";
+import type { MarketViewState, SourceStatus, WorkerCommand, WorkerEvent } from "./types";
 
 type Listener = () => void;
 
-const INITIAL_SOURCES: SourceStatus[] = LIVE_EXCHANGES.map((exchange) => ({
-  exchange,
-  connected: false,
-  state: "connecting",
-  detail: "Esperando motor de mercado",
-}));
+const INITIAL_SOURCES: SourceStatus[] = [
+  { exchange: "binance", connected: false, state: "connecting", detail: "Waiting for worker" },
+  { exchange: "bybit", connected: false, state: "connecting", detail: "Waiting for worker" },
+];
 
-function initialState(symbol: string): MarketViewState {
-  return {
-    activeSymbol: symbol,
-    symbols: [symbol],
-    snapshots: {},
-    sources: INITIAL_SOURCES,
-    publishedAt: 0,
-  };
-}
-
-const SERVER_SNAPSHOT = initialState(DEFAULT_SYMBOL);
+const INITIAL_STATE: MarketViewState = {
+  symbols: [...MARKET_SYMBOLS],
+  snapshots: {},
+  sources: INITIAL_SOURCES,
+  publishedAt: 0,
+};
 
 export class MarketConnectionManager {
   private worker: Worker | null = null;
   private readonly listeners = new Set<Listener>();
-  private selectedSymbol = DEFAULT_SYMBOL;
-  private state = initialState(DEFAULT_SYMBOL);
+  private state = INITIAL_STATE;
   private shutdownTimer: ReturnType<typeof setTimeout> | null = null;
 
   subscribe = (listener: Listener): (() => void) => {
@@ -46,19 +38,8 @@ export class MarketConnectionManager {
   };
 
   getSnapshot = (): MarketViewState => this.state;
-  getServerSnapshot = (): MarketViewState => SERVER_SNAPSHOT;
 
-  setSymbol(symbol: string): void {
-    const normalized = normalizeSymbol(symbol);
-    if (normalized === this.selectedSymbol) return;
-    this.selectedSymbol = normalized;
-    this.state = initialState(normalized);
-    this.notify();
-    if (this.worker) {
-      const command: WorkerCommand = { type: "set-symbol", symbol: normalized };
-      this.worker.postMessage(command);
-    }
-  }
+  getServerSnapshot = (): MarketViewState => INITIAL_STATE;
 
   private ensureStarted(): void {
     if (this.worker || typeof window === "undefined") return;
@@ -81,7 +62,7 @@ export class MarketConnectionManager {
           })),
         };
       }
-      this.notify();
+      for (const listener of this.listeners) listener();
     };
     this.worker.onerror = (error) => {
       this.state = {
@@ -90,17 +71,13 @@ export class MarketConnectionManager {
           ...source,
           connected: false,
           state: "unavailable",
-          detail: error.message || "Falló el motor de mercado",
+          detail: error.message || "Market worker failed",
         })),
       };
-      this.notify();
+      for (const listener of this.listeners) listener();
     };
-    const command: WorkerCommand = { type: "start", symbol: this.selectedSymbol };
+    const command: WorkerCommand = { type: "start" };
     this.worker.postMessage(command);
-  }
-
-  private notify(): void {
-    for (const listener of this.listeners) listener();
   }
 
   private stop(): void {
@@ -109,7 +86,7 @@ export class MarketConnectionManager {
     this.worker.postMessage(command);
     this.worker.terminate();
     this.worker = null;
-    this.state = initialState(this.selectedSymbol);
+    this.state = INITIAL_STATE;
   }
 }
 

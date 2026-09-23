@@ -10,7 +10,3 @@ export function useMarketEngine() {
     marketConnectionManager.getServerSnapshot,
   );
 }
-
-export function setMarketSymbol(symbol: string): void {
-  marketConnectionManager.setSymbol(symbol);
-}

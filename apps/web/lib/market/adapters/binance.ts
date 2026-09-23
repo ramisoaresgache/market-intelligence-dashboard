@@ -1,4 +1,4 @@
-import { normalizeSymbol, toBinanceSymbol } from "../symbols";
+import { MARKET_SYMBOLS, toBinanceSymbol } from "../symbols";
 import type { LiquidationEvent, MarketMetrics } from "../types";
 import {
   BinanceOrderBook,
@@ -11,25 +11,24 @@ import { BrowserExchangeAdapter, type MarketEventSink } from "./base";
 const WS_BASE = "wss://fstream.binance.com";
 const REST_BASE = "https://fapi.binance.com";
 const OPEN_INTEREST_INTERVAL_MS = 30_000;
-const EXPECTED_FEEDS = 2;
+const EXPECTED_FEEDS = MARKET_SYMBOLS.length + 1;
 
 export class BinanceAdapter extends BrowserExchangeAdapter {
   private readonly sockets = new Set<WebSocket>();
   private readonly connectedFeeds = new Set<string>();
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private abortController: AbortController | null = null;
-  private readonly symbol: string;
+  private lastStatusAt = 0;
 
-  constructor(emit: MarketEventSink, symbol: string) {
+  constructor(emit: MarketEventSink) {
     super("binance", emit);
-    this.symbol = normalizeSymbol(symbol);
   }
 
   start(): void {
     if (this.active) return;
     this.active = true;
-    this.status({ connected: false, state: "connecting", detail: "Abriendo datos públicos" });
-    this.connectDepth(this.symbol, 0);
+    this.status({ connected: false, state: "connecting", detail: "Opening public streams" });
+    for (const symbol of MARKET_SYMBOLS) this.connectDepth(symbol, 0);
     this.connectLiquidations(0);
     void this.pollOpenInterest();
   }
@@ -40,7 +39,7 @@ export class BinanceAdapter extends BrowserExchangeAdapter {
     this.pollTimer = null;
     this.abortController?.abort();
     this.abortController = null;
-    for (const socket of this.sockets) socket.close(1000, "mercado cambiado");
+    for (const socket of this.sockets) socket.close(1000, "worker stopped");
     this.sockets.clear();
     this.connectedFeeds.clear();
   }
@@ -70,7 +69,7 @@ export class BinanceAdapter extends BrowserExchangeAdapter {
         (error: unknown) => {
           closedForGap = true;
           this.reportReconnect(error);
-          socket.close(1011, "falló la sincronización del libro");
+          socket.close(1011, "depth bootstrap failed");
         },
       );
     };
@@ -93,14 +92,14 @@ export class BinanceAdapter extends BrowserExchangeAdapter {
       } catch (error) {
         closedForGap = error instanceof SequenceGapError;
         this.reportReconnect(error);
-        socket.close(1011, "secuencia de profundidad inválida");
+        socket.close(1011, "invalid depth sequence");
       }
     };
 
     socket.onerror = () => socket.close();
     socket.onclose = () => {
       this.sockets.delete(socket);
-      this.markFeed(feed, false, closedForGap ? "Resincronizando libro" : undefined);
+      this.markFeed(feed, false, closedForGap ? "Depth sequence resync" : undefined);
       this.scheduleReconnect((next) => this.connectDepth(symbol, next), attempt);
     };
   }
@@ -137,7 +136,7 @@ export class BinanceAdapter extends BrowserExchangeAdapter {
 
     socket.onopen = () => this.markFeed(feed, true);
     socket.onmessage = (message) => {
-      for (const liquidation of parseBinanceLiquidations(message.data, this.symbol)) {
+      for (const liquidation of parseBinanceLiquidations(message.data)) {
         this.emit({ type: "liquidation", data: liquidation });
       }
       this.touch();
@@ -152,54 +151,27 @@ export class BinanceAdapter extends BrowserExchangeAdapter {
 
   private async pollOpenInterest(): Promise<void> {
     if (!this.active) return;
-    try {
-      const signal = this.signal();
-      const [openInterestResponse, premiumResponse] = await Promise.all([
-        fetch(
-          `${REST_BASE}/fapi/v1/openInterest?symbol=${encodeURIComponent(this.symbol)}`,
-          { signal },
-        ),
-        fetch(
-          `${REST_BASE}/fapi/v1/premiumIndex?symbol=${encodeURIComponent(this.symbol)}`,
-          { signal },
-        ),
-      ]);
-      if (!openInterestResponse.ok) {
-        throw new Error(`Binance open interest HTTP ${openInterestResponse.status}`);
-      }
-      if (!premiumResponse.ok) {
-        throw new Error(`Binance premium index HTTP ${premiumResponse.status}`);
-      }
-
-      const openInterestPayload = (await openInterestResponse.json()) as {
-        openInterest: string;
-        symbol: string;
-        time?: number;
-      };
-      const premiumPayload = (await premiumResponse.json()) as {
-        markPrice?: string;
-        symbol?: string;
-        time?: number;
-      };
-      const openInterest = Number(openInterestPayload.openInterest);
-      const markPrice = Number(premiumPayload.markPrice);
-      const metric: MarketMetrics = {
-        exchange: "binance",
-        symbol: openInterestPayload.symbol,
-        ts: premiumPayload.time ?? openInterestPayload.time ?? Date.now(),
-        openInterest: Number.isFinite(openInterest) ? openInterest : undefined,
-        markPrice: Number.isFinite(markPrice) ? markPrice : undefined,
-        openInterestValue:
-          Number.isFinite(openInterest) && Number.isFinite(markPrice)
-            ? openInterest * markPrice
-            : undefined,
-      };
-      this.emit({ type: "metrics", data: metric });
-    } catch (error) {
-      if (this.active && !(error instanceof DOMException && error.name === "AbortError")) {
-        this.reportReconnect(error);
-      }
-    }
+    await Promise.allSettled(
+      MARKET_SYMBOLS.map(async (symbol) => {
+        const response = await fetch(
+          `${REST_BASE}/fapi/v1/openInterest?symbol=${encodeURIComponent(symbol)}`,
+          { signal: this.signal() },
+        );
+        if (!response.ok) throw new Error(`Binance open interest HTTP ${response.status}`);
+        const payload = (await response.json()) as {
+          openInterest: string;
+          symbol: string;
+          time?: number;
+        };
+        const metric: MarketMetrics = {
+          exchange: "binance",
+          symbol: payload.symbol,
+          ts: payload.time ?? Date.now(),
+          openInterest: Number(payload.openInterest),
+        };
+        this.emit({ type: "metrics", data: metric });
+      }),
+    );
     if (this.active) {
       this.pollTimer = setTimeout(() => void this.pollOpenInterest(), OPEN_INTEREST_INTERVAL_MS);
     }
@@ -221,17 +193,20 @@ export class BinanceAdapter extends BrowserExchangeAdapter {
       connected: allConnected,
       state: allConnected ? "live" : this.connectedFeeds.size ? "reconnecting" : "connecting",
       lastMessageAt: connected ? Date.now() : undefined,
-      detail: detail ?? `${this.connectedFeeds.size}/${EXPECTED_FEEDS} canales públicos activos`,
+      detail: detail ?? `${this.connectedFeeds.size}/${EXPECTED_FEEDS} public streams live`,
     });
   }
 
   private touch(): void {
+    const now = Date.now();
+    if (now - this.lastStatusAt < 1_000) return;
+    this.lastStatusAt = now;
     const allConnected = this.connectedFeeds.size === EXPECTED_FEEDS;
     this.status({
       connected: allConnected,
       state: allConnected ? "live" : "reconnecting",
-      lastMessageAt: Date.now(),
-      detail: `${this.connectedFeeds.size}/${EXPECTED_FEEDS} canales públicos activos`,
+      lastMessageAt: now,
+      detail: `${this.connectedFeeds.size}/${EXPECTED_FEEDS} public streams live`,
     });
   }
 
@@ -240,7 +215,7 @@ export class BinanceAdapter extends BrowserExchangeAdapter {
       connected: false,
       state: "reconnecting",
       lastMessageAt: Date.now(),
-      detail: error instanceof Error ? error.message : "Flujo interrumpido",
+      detail: error instanceof Error ? error.message : "Stream interrupted",
     });
   }
 }
@@ -255,30 +230,27 @@ export function parseBinanceDepth(raw: unknown): BinanceDepthEvent {
     !Array.isArray(event.b) ||
     !Array.isArray(event.a)
   ) {
-    throw new Error("Payload de profundidad Binance inválido");
+    throw new Error("Invalid Binance depth payload");
   }
   return event as BinanceDepthEvent;
 }
 
-export function parseBinanceLiquidations(raw: unknown, symbolFilter?: string): LiquidationEvent[] {
+export function parseBinanceLiquidations(raw: unknown): LiquidationEvent[] {
   const decoded = typeof raw === "string" ? JSON.parse(raw) : raw;
   const entries = Array.isArray(decoded) ? decoded : [decoded];
   const liquidations: LiquidationEvent[] = [];
-  const normalizedFilter = symbolFilter ? normalizeSymbol(symbolFilter) : null;
 
   for (const entry of entries) {
     if (!isRecord(entry)) continue;
     const event = isRecord(entry.data) ? entry.data : entry;
     const order = isRecord(event.o) ? event.o : null;
-    if (!order || typeof order.s !== "string") continue;
-    const symbol = order.s.toUpperCase();
-    if (!symbol.endsWith("USDT") || (normalizedFilter && symbol !== normalizedFilter)) continue;
+    if (!order || !MARKET_SYMBOLS.includes(order.s as (typeof MARKET_SYMBOLS)[number])) continue;
     const price = Number(order.ap || order.p);
     const qty = Number(order.z || order.q);
     if (!Number.isFinite(price) || !Number.isFinite(qty)) continue;
     liquidations.push({
       exchange: "binance",
-      symbol,
+      symbol: String(order.s),
       ts: Number(order.T ?? event.E ?? Date.now()),
       side: order.S === "SELL" ? "long" : "short",
       price,
@@ -292,7 +264,7 @@ export function parseBinanceLiquidations(raw: unknown, symbolFilter?: string): L
 
 function parseJsonObject(raw: unknown): Record<string, unknown> {
   const decoded = typeof raw === "string" ? JSON.parse(raw) : raw;
-  if (!isRecord(decoded)) throw new Error("Se esperaba un objeto JSON");
+  if (!isRecord(decoded)) throw new Error("Expected a JSON object");
   return decoded;
 }
 
