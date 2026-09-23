@@ -23,6 +23,7 @@ export class BybitAdapter extends BrowserExchangeAdapter {
   private socket: WebSocket | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private readonly books = new Map<string, BybitOrderBook>();
+  private lastStatusAt = 0;
 
   constructor(emit: MarketEventSink) {
     super("bybit", emit);
@@ -57,10 +58,9 @@ export class BybitAdapter extends BrowserExchangeAdapter {
       ]);
       socket.send(JSON.stringify({ op: "subscribe", args: topics }));
       this.status({
-        connected: true,
-        state: "live",
-        lastMessageAt: Date.now(),
-        detail: "Public linear stream live",
+        connected: false,
+        state: "connecting",
+        detail: "Awaiting subscription acknowledgement",
       });
       this.heartbeatTimer = setInterval(() => {
         if (socket.readyState === WebSocket.OPEN) {
@@ -71,13 +71,12 @@ export class BybitAdapter extends BrowserExchangeAdapter {
 
     socket.onmessage = (message) => {
       try {
-        this.handleMessage(parseBybitPayload(message.data));
-        this.status({
-          connected: true,
-          state: "live",
-          lastMessageAt: Date.now(),
-          detail: "Public linear stream live",
-        });
+        const payload = parseBybitPayload(message.data);
+        if (payload.op === "subscribe" && payload.success !== true) {
+          throw new SubscriptionError("Bybit rejected the public topic subscription");
+        }
+        this.handleMessage(payload);
+        if (payload.op === "subscribe" || payload.topic) this.touch();
       } catch (error) {
         this.status({
           connected: false,
@@ -85,7 +84,9 @@ export class BybitAdapter extends BrowserExchangeAdapter {
           lastMessageAt: Date.now(),
           detail: error instanceof Error ? error.message : "Invalid stream message",
         });
-        if (error instanceof SequenceGapError) socket.close(1011, "depth sequence gap");
+        if (error instanceof SequenceGapError || error instanceof SubscriptionError) {
+          socket.close(1011, "public stream resync");
+        }
       }
     };
 
@@ -122,7 +123,21 @@ export class BybitAdapter extends BrowserExchangeAdapter {
       if (metrics) this.emit({ type: "metrics", data: metrics });
     }
   }
+
+  private touch(): void {
+    const now = Date.now();
+    if (now - this.lastStatusAt < 1_000) return;
+    this.lastStatusAt = now;
+    this.status({
+      connected: true,
+      state: "live",
+      lastMessageAt: now,
+      detail: "Public linear topics acknowledged and live",
+    });
+  }
 }
+
+class SubscriptionError extends Error {}
 
 export function parseBybitPayload(raw: unknown): BybitPayload {
   const decoded = typeof raw === "string" ? JSON.parse(raw) : raw;

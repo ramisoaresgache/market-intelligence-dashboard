@@ -18,6 +18,7 @@ export class BinanceAdapter extends BrowserExchangeAdapter {
   private readonly connectedFeeds = new Set<string>();
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private abortController: AbortController | null = null;
+  private lastStatusAt = 0;
 
   constructor(emit: MarketEventSink) {
     super("binance", emit);
@@ -197,11 +198,14 @@ export class BinanceAdapter extends BrowserExchangeAdapter {
   }
 
   private touch(): void {
+    const now = Date.now();
+    if (now - this.lastStatusAt < 1_000) return;
+    this.lastStatusAt = now;
     const allConnected = this.connectedFeeds.size === EXPECTED_FEEDS;
     this.status({
       connected: allConnected,
       state: allConnected ? "live" : "reconnecting",
-      lastMessageAt: Date.now(),
+      lastMessageAt: now,
       detail: `${this.connectedFeeds.size}/${EXPECTED_FEEDS} public streams live`,
     });
   }
