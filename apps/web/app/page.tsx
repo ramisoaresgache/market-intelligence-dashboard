@@ -1,9 +1,10 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { EstimatedLiquidationHeatmap } from "../components/charts/estimated-liquidation-heatmap";
 import { LiquidityHeatmap } from "../components/charts/liquidity-heatmap";
-import { OrderBookLiquidity } from "../components/charts/orderbook-liquidity";
 import { consolidateOrderBooks } from "../lib/market/engine/visualization";
+import { useEstimatedLiquidations } from "../lib/market/use-estimated-liquidations";
 import { useLiquidityHistory } from "../lib/market/use-liquidity-history";
 import { useMarketEngine } from "../lib/market/use-market-engine";
 import type {
@@ -26,6 +27,7 @@ export default function Dashboard() {
   const [activeSymbol, setActiveSymbol] = useState("BTCUSDT");
   const snapshot = snapshots[activeSymbol];
   const history = useLiquidityHistory(activeSymbol, snapshot);
+  const liquidationModel = useEstimatedLiquidations(activeSymbol, snapshot);
   const book = useMemo(
     () => consolidateOrderBooks(snapshot?.orderBooks ?? []),
     [snapshot?.orderBooks],
@@ -107,13 +109,17 @@ export default function Dashboard() {
             <HeroMetric label="FUNDING" value={funding(bybit?.fundingRate)} tone={fundingTone(bybit?.fundingRate)} foot={bybit?.nextFundingTime ? `next ${time(bybit.nextFundingTime)}` : "Bybit"} />
           </section>
 
-          <section className="dashboard-grid">
+          <section className="dashboard-grid market-maps">
             <LiquidityHeatmap
               symbol={activeSymbol}
               history={history}
-              liquidations={snapshot?.liquidations ?? []}
             />
-            <OrderBookLiquidity symbol={activeSymbol} snapshot={snapshot} />
+            <EstimatedLiquidationHeatmap
+              symbol={activeSymbol}
+              samples={liquidationModel.samples}
+              zones={liquidationModel.zones}
+              observed={snapshot?.liquidations ?? []}
+            />
           </section>
 
           <section className="lower-grid" id="liquidations">
@@ -137,7 +143,7 @@ export default function Dashboard() {
 
           <footer className="app-footer">
             <span>MARKET INTELLIGENCE / PUBLIC MVP</span>
-            <span>Observed data only · Binance liquidation coverage is partial</span>
+            <span>Order book data is observed · liquidation zones are explicitly modeled estimates</span>
           </footer>
         </main>
       </div>

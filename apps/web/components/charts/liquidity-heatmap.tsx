@@ -2,22 +2,20 @@
 
 import { useMemo, useRef, useState, type WheelEvent } from "react";
 import type { LiquidityFrame } from "../../lib/market/use-liquidity-history";
-import type { LiquidationEvent } from "../../lib/market/types";
 import { percentile } from "../../lib/market/engine/visualization";
 import { exportSvgAsPng } from "./chart-export";
 import { ChartToolbar } from "./chart-toolbar";
 
-const WIDTH = 1080;
-const HEIGHT = 430;
-const PLOT = { left: 76, right: 28, top: 22, bottom: 48 };
+const WIDTH = 1120;
+const HEIGHT = 500;
+const PLOT = { left: 76, right: 190, top: 28, bottom: 52 };
 
 type Props = {
   symbol: string;
   history: LiquidityFrame[];
-  liquidations: LiquidationEvent[];
 };
 
-export function LiquidityHeatmap({ symbol, history, liquidations }: Props) {
+export function LiquidityHeatmap({ symbol, history }: Props) {
   const [zoom, setZoom] = useState(1);
   const [exportLabel, setExportLabel] = useState("Export PNG");
   const svgRef = useRef<SVGSVGElement>(null);
@@ -45,9 +43,9 @@ export function LiquidityHeatmap({ symbol, history, liquidations }: Props) {
     <section className="chart-card heatmap-card" id="liquidity">
       <div className="panel-heading">
         <div>
-          <span className="section-kicker">SESSION LIQUIDITY</span>
-          <h2>Liquidity heatmap</h2>
-          <p>Visible limit liquidity sampled locally every 2 seconds.</p>
+          <span className="section-kicker">REAL EXCHANGE ORDER BOOKS</span>
+          <h2>Order book liquidity heatmap</h2>
+          <p>Visible Binance + Bybit limit orders over time, sampled locally every 2 seconds.</p>
         </div>
         <ChartToolbar
           zoom={zoom}
@@ -60,10 +58,10 @@ export function LiquidityHeatmap({ symbol, history, liquidations }: Props) {
       </div>
 
       <div className="chart-legend">
-        <span><i className="legend-gradient" /> visible notional</span>
-        <span><i className="legend-line" /> consolidated mid</span>
-        <span><i className="legend-dot liquidation-long" /> long liquidation</span>
-        <span><i className="legend-dot liquidation-short" /> short liquidation</span>
+        <span><i className="legend-gradient" /> visible order notional</span>
+        <span><i className="legend-line" /> consolidated mid price</span>
+        <span><i className="legend-bar bid-bar" /> current bids</span>
+        <span><i className="legend-bar ask-bar" /> current asks</span>
         <small>Scroll over chart to zoom</small>
       </div>
 
@@ -78,6 +76,7 @@ export function LiquidityHeatmap({ symbol, history, liquidations }: Props) {
             onWheel={handleWheel}
           >
             <rect width={WIDTH} height={HEIGHT} fill="#070b12" />
+            <rect x={PLOT.left} y={PLOT.top} width={WIDTH - PLOT.left - PLOT.right} height={HEIGHT - PLOT.top - PLOT.bottom} fill="#071625" />
             <ChartGrid min={model.minPrice} max={model.maxPrice} start={model.start} end={model.end} />
             <g aria-hidden="true">
               {model.cells.map((cell) => (
@@ -94,26 +93,23 @@ export function LiquidityHeatmap({ symbol, history, liquidations }: Props) {
                 </rect>
               ))}
               <polyline points={model.midLine} fill="none" stroke="#f05a83" strokeWidth="2.2" />
-              {liquidations
-                .filter((event) => event.ts >= model.start && event.ts <= model.end)
-                .map((event, index) => {
-                  const x = scale(event.ts, model.start, model.end, PLOT.left, WIDTH - PLOT.right);
-                  const y = scale(event.price, model.maxPrice, model.minPrice, PLOT.top, HEIGHT - PLOT.bottom);
-                  return (
-                    <circle
-                      key={`${event.exchange}-${event.ts}-${index}`}
-                      cx={x}
-                      cy={y}
-                      r={Math.min(8, 3 + Math.log10(Math.max(1, event.notional)) / 2)}
-                      fill={event.side === "long" ? "#ff4f72" : "#2ee6a6"}
-                      stroke="#071018"
-                      strokeWidth="2"
-                    >
-                      <title>{`${event.side.toUpperCase()} · ${compactMoney(event.notional)} · ${event.exchange}`}</title>
-                    </circle>
-                  );
-                })}
+              <line x1={WIDTH - PLOT.right + 12} y1={PLOT.top} x2={WIDTH - PLOT.right + 12} y2={HEIGHT - PLOT.bottom} stroke="#31465c" />
+              {model.profile.map((level) => (
+                <rect
+                  key={`profile-${level.price}-${level.side}`}
+                  x={WIDTH - PLOT.right + 20}
+                  y={level.y - level.height / 2}
+                  width={level.width}
+                  height={level.height}
+                  rx="1"
+                  fill={level.side === "bid" ? "#22d5b0" : "#ff547c"}
+                  opacity={0.38 + level.intensity * 0.6}
+                >
+                  <title>{`${level.side.toUpperCase()} ${formatPrice(level.price)} · ${compactMoney(level.notional)}`}</title>
+                </rect>
+              ))}
             </g>
+            <text x={WIDTH - PLOT.right + 20} y="18" fill="#718198" fontSize="10">CURRENT DEPTH</text>
             <AxisLabels min={model.minPrice} max={model.maxPrice} start={model.start} end={model.end} />
           </svg>
         ) : (
@@ -175,7 +171,34 @@ function buildModel(history: LiquidityFrame[], zoom: number) {
       return `${x},${y}`;
     })
     .join(" ");
-  return { cells, midLine, minPrice, maxPrice, start, end };
+  const latest = frames.at(-1);
+  const profileLevels = latest?.levels.filter(
+    (level) => level.price >= minPrice && level.price <= maxPrice,
+  ) ?? [];
+  const profileNotionals = profileLevels.flatMap((level) => [level.bidNotional, level.askNotional]).filter(Boolean);
+  const profileCeiling = Math.max(1, percentile(profileNotionals, 0.95));
+  const profileWidth = PLOT.right - 38;
+  const profile = profileLevels.flatMap((level) => ([
+    ...(level.bidNotional > 0 ? [{
+      price: level.price,
+      side: "bid" as const,
+      notional: level.bidNotional,
+      y: scale(level.price, maxPrice, minPrice, PLOT.top, HEIGHT - PLOT.bottom),
+      height: rowHeight,
+      intensity: Math.min(1, Math.log1p(level.bidNotional) / Math.log1p(profileCeiling)),
+      width: profileWidth * Math.min(1, Math.log1p(level.bidNotional) / Math.log1p(profileCeiling)),
+    }] : []),
+    ...(level.askNotional > 0 ? [{
+      price: level.price,
+      side: "ask" as const,
+      notional: level.askNotional,
+      y: scale(level.price, maxPrice, minPrice, PLOT.top, HEIGHT - PLOT.bottom),
+      height: rowHeight,
+      intensity: Math.min(1, Math.log1p(level.askNotional) / Math.log1p(profileCeiling)),
+      width: profileWidth * Math.min(1, Math.log1p(level.askNotional) / Math.log1p(profileCeiling)),
+    }] : []),
+  ]));
+  return { cells, midLine, profile, minPrice, maxPrice, start, end };
 }
 
 function ChartGrid({ min, max, start, end }: { min: number; max: number; start: number; end: number }) {
