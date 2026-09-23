@@ -62,11 +62,8 @@ export function useLiquidityHistory(
       ts: snapshot.ts,
       mid: book.mid,
       levels: [...book.levels]
-        .sort(
-          (left, right) =>
-            right.bidNotional + right.askNotional - (left.bidNotional + left.askNotional),
-        )
-        .slice(0, 100),
+        .sort((left, right) => Math.abs(left.price - book.mid!) - Math.abs(right.price - book.mid!))
+        .slice(0, 160),
     };
 
     setTimeout(() => {
