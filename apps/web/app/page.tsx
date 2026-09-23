@@ -3,6 +3,8 @@
 import { useMemo, useState } from "react";
 import { EstimatedLiquidationHeatmap } from "../components/charts/estimated-liquidation-heatmap";
 import { LiquidityHeatmap } from "../components/charts/liquidity-heatmap";
+import { CapitalFlows } from "../components/capital-flows";
+import { ObservedLiquidationSummary } from "../components/observed-liquidation-summary";
 import { consolidateOrderBooks } from "../lib/market/engine/visualization";
 import { useEstimatedLiquidations } from "../lib/market/use-estimated-liquidations";
 import { useHistoricalLiquidationMap } from "../lib/market/use-historical-liquidation-map";
@@ -26,6 +28,7 @@ const price = new Intl.NumberFormat("en-US", {
 export default function Dashboard() {
   const { snapshots, sources, symbols } = useMarketEngine();
   const [activeSymbol, setActiveSymbol] = useState("BTCUSDT");
+  const [view, setView] = useState<DashboardView>("market");
   const snapshot = snapshots[activeSymbol];
   const history = useLiquidityHistory(activeSymbol, snapshot);
   const liquidationModel = useEstimatedLiquidations(activeSymbol, snapshot);
@@ -43,15 +46,15 @@ export default function Dashboard() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <a className="brand" href="#overview" aria-label="Market Intelligence home">
+        <button className="brand brand-button" type="button" onClick={() => setView("market")} aria-label="Market Intelligence home">
           <span className="brand-mark"><i /><i /><i /></span>
           <span><b>MI</b><small>MARKET INTEL</small></span>
-        </a>
+        </button>
         <nav aria-label="Dashboard sections">
-          <NavLink href="#overview" icon="grid" label="Overview" active />
-          <NavLink href="#liquidity" icon="waves" label="Liquidity" />
-          <NavLink href="#liquidations" icon="bolt" label="Liquidations" />
-          <NavLink href="#news" icon="news" label="News & Macro" />
+          <NavLink view="market" icon="waves" label="Mercado" current={view} onSelect={setView} />
+          <NavLink view="liquidations" icon="bolt" label="Liquidaciones" current={view} onSelect={setView} />
+          <NavLink view="flows" icon="flows" label="Flujos y reservas" current={view} onSelect={setView} />
+          <NavLink view="news" icon="news" label="Noticias" current={view} onSelect={setView} />
         </nav>
         <div className="sidebar-status">
           <span className={`system-pulse ${connection}`} />
@@ -111,25 +114,27 @@ export default function Dashboard() {
             <HeroMetric label="FUNDING" value={funding(bybit?.fundingRate)} tone={fundingTone(bybit?.fundingRate)} foot={bybit?.nextFundingTime ? `next ${time(bybit.nextFundingTime)}` : "Bybit"} />
           </section>
 
-          <section className="dashboard-grid market-maps">
-            <LiquidityHeatmap
-              symbol={activeSymbol}
-              history={history}
-            />
+          {view === "market" ? <section className="dashboard-grid market-maps section-view">
+            <LiquidityHeatmap symbol={activeSymbol} history={history} candles={historicalLiquidations.candles} />
             <EstimatedLiquidationHeatmap
-              symbol={activeSymbol}
-              samples={liquidationModel.samples}
-              candles={historicalLiquidations.candles}
+              symbol={activeSymbol} samples={liquidationModel.samples} candles={historicalLiquidations.candles}
               zones={[...historicalLiquidations.zones, ...liquidationModel.zones]}
-              observed={snapshot?.liquidations ?? []}
-              historyState={historicalLiquidations.state}
+              observed={snapshot?.liquidations ?? []} historyState={historicalLiquidations.state}
             />
-          </section>
+          </section> : null}
 
-          <section className="lower-grid" id="liquidations">
-            <LiquidationsPanel symbol={activeSymbol} snapshot={snapshot} />
-            <MarketQualityPanel sources={sources} snapshot={snapshot} />
-            <section className="news-panel" id="news">
+          {view === "liquidations" ? <section className="liquidations-view section-view">
+            <ObservedLiquidationSummary symbol={activeSymbol} liquidations={snapshot?.liquidations ?? []} />
+            <div className="lower-grid liquidation-detail-grid">
+              <LiquidationsPanel symbol={activeSymbol} snapshot={snapshot} />
+              <MarketQualityPanel sources={sources} snapshot={snapshot} />
+            </div>
+          </section> : null}
+
+          {view === "flows" ? <div className="section-view"><CapitalFlows /></div> : null}
+
+          {view === "news" ? <section className="news-view section-view">
+            <section className="news-panel">
               <div className="panel-heading compact-heading">
                 <div>
                   <span className="section-kicker">NEWS & MACRO</span>
@@ -143,7 +148,7 @@ export default function Dashboard() {
                 <p>FED, SEC, GDELT and macro feeds belong to the next scoped module. No synthetic headlines are shown.</p>
               </div>
             </section>
-          </section>
+          </section> : null}
 
           <footer className="app-footer">
             <span>MARKET INTELLIGENCE / PUBLIC MVP</span>
@@ -175,8 +180,10 @@ function SourcePill({ source }: { source: SourceStatus }) {
   );
 }
 
-function NavLink({ href, icon, label, active = false }: { href: string; icon: string; label: string; active?: boolean }) {
-  return <a href={href} className={active ? "active" : ""}><span className={`nav-icon ${icon}`} />{label}</a>;
+type DashboardView = "market" | "liquidations" | "flows" | "news";
+
+function NavLink({ view, icon, label, current, onSelect }: { view: DashboardView; icon: string; label: string; current: DashboardView; onSelect: (view: DashboardView) => void }) {
+  return <button type="button" onClick={() => onSelect(view)} className={current === view ? "active" : ""}><span className={`nav-icon ${icon}`} />{label}</button>;
 }
 
 function HeroMetric({ label, value, foot, tone = "" }: { label: string; value: string; foot: string; tone?: string }) {

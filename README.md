@@ -27,6 +27,13 @@ Vercel / Next.js
 
 El dashboard ya consume Binance USD-M y Bybit Linear directamente desde el navegador. No necesita `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_WS_URL` ni FastAPI levantado.
 
+La interfaz está dividida en vistas para evitar scroll vertical innecesario:
+
+- **Mercado**: heatmap del libro de órdenes con velas reales y mapa estimado de liquidaciones.
+- **Liquidaciones**: totales observados de 1h, 4h, 12h y 24h más el feed en vivo.
+- **Flujos y reservas**: entradas, salidas y saldo agregado de BTC en exchanges; flujos ETF spot si se configura el proveedor.
+- **Noticias**: módulo reservado, todavía sin fuentes sintéticas ni contenido inventado.
+
 Un único `MarketConnectionManager` por pestaña inicia un Web Worker. El worker mantiene las conexiones, valida y normaliza los order books a frecuencia nativa, conserva el estado y publica un snapshot coalescido hacia React cada 150 ms. Cada exchange reconecta de forma independiente con backoff, por lo que una caída parcial no detiene la otra fuente.
 
 El backend FastAPI permanece en `services/api` sólo como referencia de migración y no fue eliminado en este PR.
@@ -91,6 +98,15 @@ npm run dev:web
 ```
 
 Abrir `http://localhost:3000`. No hay variables de entorno obligatorias y no hace falta iniciar `services/api`.
+
+Variables opcionales en `apps/web/.env.local`:
+
+```env
+LIQUIDATION_COLLECTOR_URL=https://market-intelligence-dashboard.godino290.workers.dev
+SOSOVALUE_API_KEY=
+```
+
+El collector público de Cloudflare tiene un valor por defecto, por lo que los históricos de order book y liquidaciones funcionan sin configuración local. `SOSOVALUE_API_KEY` es necesaria únicamente para mostrar los flujos reales de ETF BTC, ETH y SOL; nunca debe declararse con prefijo `NEXT_PUBLIC_`.
 
 Validaciones:
 

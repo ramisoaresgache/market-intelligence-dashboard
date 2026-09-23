@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useState, type WheelEvent } from "react";
 import type { LiquidityFrame } from "../../lib/market/use-liquidity-history";
+import type { HistoricalCandle } from "../../lib/market/use-historical-liquidation-map";
 import { percentile } from "../../lib/market/engine/visualization";
 import { exportSvgAsPng } from "./chart-export";
 import { ChartToolbar } from "./chart-toolbar";
@@ -13,13 +14,14 @@ const PLOT = { left: 76, right: 190, top: 28, bottom: 52 };
 type Props = {
   symbol: string;
   history: LiquidityFrame[];
+  candles: HistoricalCandle[];
 };
 
-export function LiquidityHeatmap({ symbol, history }: Props) {
+export function LiquidityHeatmap({ symbol, history, candles }: Props) {
   const [zoom, setZoom] = useState(1);
   const [exportLabel, setExportLabel] = useState("Export PNG");
   const svgRef = useRef<SVGSVGElement>(null);
-  const model = useMemo(() => buildModel(history, zoom), [history, zoom]);
+  const model = useMemo(() => buildModel(history, candles, zoom), [history, candles, zoom]);
 
   const changeZoom = (direction: number) => {
     setZoom((current) => clamp(Number((current + direction * 0.5).toFixed(1)), 1, 4));
@@ -45,7 +47,7 @@ export function LiquidityHeatmap({ symbol, history }: Props) {
         <div>
           <span className="section-kicker">REAL EXCHANGE ORDER BOOKS</span>
           <h2>Order book liquidity heatmap</h2>
-          <p>Visible Binance + Bybit limit orders over time, sampled locally every 2 seconds.</p>
+          <p>Historical Cloudflare snapshots coalesced with live Binance + Bybit order books.</p>
         </div>
         <ChartToolbar
           zoom={zoom}
@@ -59,7 +61,7 @@ export function LiquidityHeatmap({ symbol, history }: Props) {
 
       <div className="chart-legend">
         <span><i className="legend-gradient" /> visible order notional</span>
-        <span><i className="legend-line" /> consolidated mid price</span>
+        <span><i className="candle-key up" /> price candles</span>
         <span><i className="legend-bar bid-bar" /> current bids</span>
         <span><i className="legend-bar ask-bar" /> current asks</span>
         <small>Scroll over chart to zoom</small>
@@ -92,7 +94,12 @@ export function LiquidityHeatmap({ symbol, history }: Props) {
                   <title>{`${formatPrice(cell.price)} · ${compactMoney(cell.notional)}`}</title>
                 </rect>
               ))}
-              <polyline points={model.midLine} fill="none" stroke="#f05a83" strokeWidth="2.2" />
+              {model.candles.map((candle) => (
+                <g key={`candle-${candle.ts}`}>
+                  <line x1={candle.x} x2={candle.x} y1={candle.highY} y2={candle.lowY} stroke={candle.up ? "#2ee6aa" : "#ff5377"} strokeWidth="1.2" />
+                  <rect x={candle.x - candle.width / 2} y={candle.bodyY} width={candle.width} height={candle.bodyHeight} fill={candle.up ? "#2ee6aa" : "#ff5377"} rx=".7" />
+                </g>
+              ))}
               <line x1={WIDTH - PLOT.right + 12} y1={PLOT.top} x2={WIDTH - PLOT.right + 12} y2={HEIGHT - PLOT.bottom} stroke="#31465c" />
               {model.profile.map((level) => (
                 <rect
@@ -124,19 +131,23 @@ export function LiquidityHeatmap({ symbol, history }: Props) {
   );
 }
 
-function buildModel(history: LiquidityFrame[], zoom: number) {
+function buildModel(history: LiquidityFrame[], candles: HistoricalCandle[], zoom: number) {
   if (history.length < 2) return null;
   const frameCount = Math.max(2, Math.ceil(history.length / zoom));
   const frames = history.slice(-frameCount);
   const center = frames.at(-1)?.mid ?? 0;
-  const rawPrices = frames.flatMap((frame) => frame.levels.map((level) => level.price));
+  const start = frames[0].ts;
+  const end = frames.at(-1)?.ts ?? start + 1;
+  const visibleCandles = candles.filter((candle) => candle.openTime >= start - 900_000 && candle.openTime <= end + 900_000);
+  const rawPrices = [
+    ...frames.flatMap((frame) => frame.levels.map((level) => level.price)),
+    ...visibleCandles.flatMap((candle) => [candle.low, candle.high]),
+  ];
   const rawMin = Math.min(...rawPrices, center);
   const rawMax = Math.max(...rawPrices, center);
   const halfRange = Math.max(center * 0.0005, (rawMax - rawMin) / (2 * zoom));
   const minPrice = center - halfRange;
   const maxPrice = center + halfRange;
-  const start = frames[0].ts;
-  const end = frames.at(-1)?.ts ?? start + 1;
   const plotWidth = WIDTH - PLOT.left - PLOT.right;
   const plotHeight = HEIGHT - PLOT.top - PLOT.bottom;
   const frameWidth = plotWidth / Math.max(1, frames.length - 1);
@@ -164,13 +175,18 @@ function buildModel(history: LiquidityFrame[], zoom: number) {
         };
       }),
   );
-  const midLine = frames
-    .map((frame, index) => {
-      const x = PLOT.left + index * frameWidth;
-      const y = scale(frame.mid, maxPrice, minPrice, PLOT.top, HEIGHT - PLOT.bottom);
-      return `${x},${y}`;
-    })
-    .join(" ");
+  const candleWidth = Math.max(2.5, Math.min(9, plotWidth / Math.max(visibleCandles.length, 20) * 0.5));
+  const candleShapes = visibleCandles.map((candle) => {
+    const x = scale(candle.openTime, start, end, PLOT.left, WIDTH - PLOT.right);
+    const openY = scale(candle.open, maxPrice, minPrice, PLOT.top, HEIGHT - PLOT.bottom);
+    const closeY = scale(candle.close, maxPrice, minPrice, PLOT.top, HEIGHT - PLOT.bottom);
+    return {
+      ts: candle.openTime, x, width: candleWidth, up: candle.close >= candle.open,
+      highY: scale(candle.high, maxPrice, minPrice, PLOT.top, HEIGHT - PLOT.bottom),
+      lowY: scale(candle.low, maxPrice, minPrice, PLOT.top, HEIGHT - PLOT.bottom),
+      bodyY: Math.min(openY, closeY), bodyHeight: Math.max(1.5, Math.abs(closeY - openY)),
+    };
+  });
   const latest = frames.at(-1);
   const profileLevels = latest?.levels.filter(
     (level) => level.price >= minPrice && level.price <= maxPrice,
@@ -198,7 +214,7 @@ function buildModel(history: LiquidityFrame[], zoom: number) {
       width: profileWidth * Math.min(1, Math.log1p(level.askNotional) / Math.log1p(profileCeiling)),
     }] : []),
   ]));
-  return { cells, midLine, profile, minPrice, maxPrice, start, end };
+  return { cells, candles: candleShapes, profile, minPrice, maxPrice, start, end };
 }
 
 function ChartGrid({ min, max, start, end }: { min: number; max: number; start: number; end: number }) {
@@ -214,7 +230,7 @@ function ChartGrid({ min, max, start, end }: { min: number; max: number; start: 
       })}
       <text x={PLOT.left} y={16} fill="#617086" fontSize="10">{formatPrice(max)} high</text>
       <text x={WIDTH - PLOT.right} y={16} textAnchor="end" fill="#617086" fontSize="10">
-        {Math.max(1, Math.round((end - start) / 1000))}s session window
+        {formatDuration(end - start)} window
       </text>
     </g>
   );
@@ -234,7 +250,7 @@ function AxisLabels({ min, max, start, end }: { min: number; max: number; start:
         return <text key={index} x={x} y={HEIGHT - 17} textAnchor={index === 0 ? "start" : index === 3 ? "end" : "middle"}>{time(start + (end - start) * ratio)}</text>;
       })}
       <text x={17} y={HEIGHT / 2} transform={`rotate(-90 17 ${HEIGHT / 2})`} textAnchor="middle" fill="#536176">PRICE (USDT)</text>
-      <text x={(PLOT.left + WIDTH - PLOT.right) / 2} y={HEIGHT - 2} textAnchor="middle" fill="#536176">LOCAL SESSION TIME</text>
+      <text x={(PLOT.left + WIDTH - PLOT.right) / 2} y={HEIGHT - 2} textAnchor="middle" fill="#536176">MARKET TIMELINE</text>
     </g>
   );
 }
@@ -260,6 +276,11 @@ function formatPrice(value: number): string {
 
 function compactMoney(value: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 }).format(value);
+}
+
+function formatDuration(milliseconds: number): string {
+  const minutes = Math.max(1, Math.round(milliseconds / 60_000));
+  return minutes >= 60 ? `${(minutes / 60).toFixed(minutes % 60 ? 1 : 0)}h` : `${minutes}m`;
 }
 
 function time(value: number): string {
