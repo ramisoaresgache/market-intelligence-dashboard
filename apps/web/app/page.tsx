@@ -5,6 +5,7 @@ import { EstimatedLiquidationHeatmap } from "../components/charts/estimated-liqu
 import { LiquidityHeatmap } from "../components/charts/liquidity-heatmap";
 import { CapitalFlows } from "../components/capital-flows";
 import { ObservedLiquidationSummary } from "../components/observed-liquidation-summary";
+import { MarketPulse } from "../components/market-pulse";
 import { consolidateOrderBooks } from "../lib/market/engine/visualization";
 import { useEstimatedLiquidations } from "../lib/market/use-estimated-liquidations";
 import { useHistoricalLiquidationMap } from "../lib/market/use-historical-liquidation-map";
@@ -91,6 +92,7 @@ export default function Dashboard() {
                 <p>Consolidated public data · Binance USD-M + Bybit Linear</p>
               </div>
             </div>
+            <MarketPulse symbol={activeSymbol} currentPrice={mark} />
             <div className="live-price">
               <small>MARK PRICE</small>
               <strong>{mark == null ? "—" : `$${price.format(mark)}`}</strong>
