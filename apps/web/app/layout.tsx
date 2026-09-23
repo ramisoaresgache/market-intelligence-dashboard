@@ -3,6 +3,7 @@ import { AppNav } from "../components/app-nav";
 import "./globals.css";
 import "../components/pr17-global.css";
 import "../components/pr21-global.css";
+import "../components/pr24-global.css";
 
 export const metadata: Metadata = {
   title: "Market Intelligence",

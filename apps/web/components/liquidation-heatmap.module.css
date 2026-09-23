@@ -23,8 +23,50 @@
   font-weight: 800;
 }
 
-.thresholdControl {
+.zoomControl {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #9ba8b8;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.zoomControl button {
+  min-width: 30px;
+  height: 29px;
+  padding: 0 8px;
+  border: 1px solid #273242;
+  border-radius: 7px;
+  color: #d8e0e9;
+  background: rgba(17, 23, 34, .82);
+  cursor: pointer;
+}
+
+.zoomControl button:hover:not(:disabled) {
+  color: #35d9dc;
+  border-color: rgba(53, 217, 220, .45);
+}
+
+.zoomControl button:disabled {
+  opacity: .38;
+  cursor: default;
+}
+
+.zoomControl > span {
+  min-width: 42px;
+  color: #c1cbd8;
+  font: 10px ui-monospace, monospace;
+  text-align: center;
+}
+
+.zoomControl .resetZoom {
+  width: auto;
+  font-size: 9px;
+}
+
+.thresholdControl {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -134,9 +176,15 @@
   line-height: 1.5;
 }
 
-@media (max-width: 760px) {
-  .thresholdControl {
+@media (max-width: 900px) {
+  .zoomControl {
     margin-left: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .zoomControl,
+  .thresholdControl {
     width: 100%;
   }
 

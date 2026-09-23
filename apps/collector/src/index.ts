@@ -11,9 +11,18 @@ const GATE_WS = "wss://fx-ws.gateio.ws/v4/ws/usdt";
 const GATE_API = "https://api.gateio.ws/api/v4";
 const BUCKET_MS = 60_000;
 const ALARM_MS = 60_000;
-const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const RETENTION_MS = 72 * 60 * 60 * 1000;
 const HEARTBEAT_MS = 20_000;
-const DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT"];
+const DEFAULT_SYMBOLS = [
+  "BTCUSDT",
+  "ETHUSDT",
+  "SOLUSDT",
+  "BNBUSDT",
+  "XRPUSDT",
+  "DOGEUSDT",
+  "ADAUSDT",
+  "BCHUSDT",
+];
 const WINDOWS = [1, 4, 12, 24] as const;
 
 type Side = "long" | "short";
@@ -160,6 +169,7 @@ export class LiquidationCollector extends DurableObject<Env> {
         symbols: [...this.symbols],
         activeExchanges: ["bybit", "gate", "bitmex"],
         pendingBuckets: this.pending.size,
+        retentionMs: RETENTION_MS,
         exchanges: this.serializedExchangeState(),
         storage: this.storageStats(),
       });
@@ -541,6 +551,7 @@ export class LiquidationCollector extends DurableObject<Env> {
       generatedAt: now,
       symbol,
       bucketSizeMs: BUCKET_MS,
+      retentionMs: RETENTION_MS,
       coverageStart: firstStored ?? null,
       windows,
       collector: {

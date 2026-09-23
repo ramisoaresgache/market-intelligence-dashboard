@@ -1,24 +1,26 @@
 # Market Intelligence Collector
 
-Collector 24/7 de liquidaciones para Cloudflare Workers + Durable Objects + SQLite.
+Collector 24/7 de **liquidaciones** y **snapshots de order book** para Cloudflare Workers + Durable Objects + SQLite.
 
-## Objetivo
+Este servicio existe para que el dashboard no dependa de que un navegador permanezca abierto. El browser sigue siendo la fuente de mayor frecuencia para el dato actual; Cloudflare conserva un histórico central más compacto y rodante.
 
-El frontend recibe eventos en vivo mientras el navegador está abierto. Este servicio agrega una capa central que sigue recolectando datos independientemente de la PC del usuario y persiste buckets de 1 minuto en SQLite.
+## Arquitectura
 
-## Fuentes activas
+```text
+Worker público
+   │
+   ├── LIQUIDATION_COLLECTOR -> LiquidationCollector (SQLite)
+   │      └── WebSockets continuos
+   │
+   ├── ORDERBOOK_COLLECTOR -> OrderBookCollector (SQLite)
+   │      └── snapshots REST cada 1 minuto
+   │
+   └── BINANCE_REGION_PROBE -> diagnóstico aislado
+```
 
-- **Bybit Linear**: canal público `allLiquidation.{symbol}`.
-- **Gate.io Futures USDT**: canal público `futures.public_liquidates`; el nocional se normaliza con `quanto_multiplier` del contrato.
-- **BitMEX**: tabla pública `liquidation`; por seguridad de unidades se incorpora inicialmente sólo `XBTUSD` y se normaliza como `BTCUSDT`, ya que su cantidad representa contratos con valor USD.
+## Símbolos
 
-### Binance
-
-Binance quedó desactivado para recolección activa desde Cloudflare. El collector principal y probes nuevos con `locationHint` en Western Europe, Asia-Pacific y Western North America recibieron HTTP 403 tanto en REST como durante el WebSocket Upgrade. Se conserva el endpoint de diagnóstico, pero ya no se generan reintentos permanentes.
-
-No se presenta esta cobertura como equivalente a CoinGlass: cada exchange publica distinta granularidad de liquidaciones y BitMEX sólo suma BTC en esta primera versión.
-
-## Símbolos iniciales
+Por defecto:
 
 - BTCUSDT
 - ETHUSDT
@@ -26,35 +28,185 @@ No se presenta esta cobertura como equivalente a CoinGlass: cada exchange public
 - BNBUSDT
 - XRPUSDT
 - DOGEUSDT
+- ADAUSDT
+- BCHUSDT
 
-Se configuran en `wrangler.jsonc` mediante `COLLECTOR_SYMBOLS`.
+Se configuran con `COLLECTOR_SYMBOLS` en `wrangler.jsonc`.
 
-## Persistencia
+---
 
-SQLite guarda buckets de 1 minuto:
+## LiquidationCollector
 
+### Fuentes activas
+
+- **Bybit Linear**: `allLiquidation.{symbol}`.
+- **Gate.io Futures USDT**: `futures.public_liquidates`; se usa `quanto_multiplier` para normalizar el nocional.
+- **BitMEX**: tabla pública `liquidation`; en esta versión aporta XBTUSD/BTC.
+
+### Binance
+
+Binance está desactivado para recolección activa desde Cloudflare. El collector principal y probes en Western Europe, Asia-Pacific y Western North America devolvieron HTTP 403 tanto para REST como para WebSocket upgrade.
+
+Se conserva el endpoint de diagnóstico, pero no se mantienen reintentos permanentes de Binance.
+
+### Persistencia
+
+Tabla lógica principal:
+
+```text
+liquidation_buckets
 - exchange
 - symbol
 - bucket_ts
 - long_usd
 - short_usd
 - events
+```
 
-Los eventos se acumulan en memoria durante el minuto y se escriben agrupados para evitar una escritura de base por cada mensaje WebSocket. La retención inicial es de 7 días; la API expone ventanas móviles de 1 h, 4 h, 12 h y 24 h y un desglose `byExchange`.
+Los eventos se acumulan en memoria y se vacían como buckets de **1 minuto**. No se escribe una fila SQLite por evento WebSocket.
 
-## Endpoints
+### Retención
 
-- `GET /` — información del servicio.
-- `GET /bootstrap` — instancia el Durable Object y abre las fuentes activas.
-- `GET /health` — estado de Bybit, Gate.io, BitMEX, Binance desactivado y almacenamiento.
-- `GET /v1/liquidations/symbols` — símbolos recolectados.
-- `GET /v1/liquidations/summary?symbol=BTCUSDT` — totales 1h/4h/12h/24h.
-- `GET /v1/diagnostics/binance` — estado y motivo de desactivación de Binance.
-- `GET /v1/diagnostics/binance-regions` — prueba REST + WebSocket de Binance desde probes regionales.
+**72 horas** rodantes.
+
+Una alarma elimina automáticamente buckets anteriores al límite.
+
+La API expone ventanas de:
+
+- 1 h
+- 4 h
+- 12 h
+- 24 h
+
+### Endpoints
+
+```text
+GET /bootstrap
+GET /health
+GET /v1/liquidations/symbols
+GET /v1/liquidations/summary?symbol=BTCUSDT
+GET /v1/diagnostics/binance
+GET /v1/diagnostics/binance-regions
+```
+
+---
+
+## OrderBookCollector
+
+### Objetivo
+
+Construir continuidad histórica para el heatmap de order book sin guardar cada delta de alta frecuencia.
+
+El navegador mantiene el WebSocket en vivo y guarda muestras de 5 segundos en IndexedDB. Cloudflare toma una muestra central cada **1 minuto**.
+
+### Fuentes centrales
+
+- Bybit
+- OKX
+- MEXC
+- WhiteBIT
+- Bitunix
+
+Cada fuente se consulta de forma pública y best-effort. Si una fuente falla en un minuto, las demás pueden seguir formando el snapshot.
+
+### Fuentes sólo browser-side
+
+- **Binance**: Cloudflare continúa bloqueado con HTTP 403.
+- **BingX**: se mantiene browser-side en esta etapa; no se agregan secretos privados sólo para el histórico central.
+
+### Persistencia
+
+Tabla:
+
+```text
+orderbook_snapshots
+- symbol
+- bucket_ts
+- payload_json
+```
+
+Hay **una fila por símbolo/minuto**. `payload_json` agrupa las fuentes que respondieron en ese snapshot.
+
+No se crea una fila separada por exchange porque eso multiplicaría las escrituras. El JSON conserva la separación por fuente para reconstruir posteriormente `Todos` o un exchange individual cuando existe cobertura central.
+
+Cada libro conserva hasta 30 niveles por lado/fuente, convertidos a:
+
+```text
+[precio, nocional_usd]
+```
+
+Para contratos donde la cantidad viene en contratos (por ejemplo OKX/MEXC), el collector usa los metadatos públicos del instrumento para convertir a cantidad base antes de calcular el nocional.
+
+### Retención
+
+**48 horas** rodantes.
+
+No se conserva actualmente una capa de 7 días. El producto no usa esas temporalidades y la prioridad es mantener el uso de SQLite controlado.
+
+### Resolución
+
+```text
+Cloudflare: 1 minuto
+Browser IndexedDB: 5 segundos
+```
+
+El histórico central y el local se combinan en el frontend. El central aporta continuidad mientras la PC está cerrada; el local aporta detalle fino durante la sesión.
+
+### Endpoints
+
+```text
+GET /v1/orderbook/health
+GET /v1/orderbook/symbols
+GET /v1/orderbook/history?symbol=BTCUSDT&exchange=all&hours=4
+```
+
+`hours` admite hasta 48 horas. La UI actual consulta hasta 4 horas para el heatmap.
+
+### Health
+
+`/v1/orderbook/health` informa:
+
+- símbolos configurados;
+- resolución;
+- retención;
+- fuentes centrales;
+- fuentes browser-only;
+- último ciclo de recolección;
+- éxitos/fallos por fuente desde el último arranque del objeto;
+- cantidad de filas y primer/último snapshot almacenado.
+
+---
+
+## Política de almacenamiento
+
+La idea es que la base llegue a un estado estable en vez de crecer indefinidamente.
+
+### Order book
+
+Con 8 símbolos:
+
+```text
+8 × 1.440 minutos = ~11.520 filas nuevas/día
+```
+
+Con 48 h de retención, el estado estable ronda unas 23.040 filas, salvo huecos por fallos de fuente.
+
+### Liquidaciones
+
+Las filas dependen de la actividad: sólo hay bucket cuando hubo liquidaciones de una fuente/símbolo durante ese minuto.
+
+### Borrado
+
+- order book: `bucket_ts < now - 48h`;
+- liquidaciones: `bucket_ts < now - 72h`.
+
+Los `DELETE` también son parte del costo de escritura, por eso se evita persistir snapshots de 5 segundos en Cloudflare.
+
+---
 
 ## Deploy con Cloudflare Git Integration
 
-Configuración usada actualmente en Cloudflare Workers Builds para este monorepo:
+Configuración esperada:
 
 - Production branch: `main`
 - Root directory: `/`
@@ -65,11 +217,24 @@ Configuración usada actualmente en Cloudflare Workers Builds para este monorepo
 - Builds for non-production branches: desactivado
 - Cloudflare Access: desactivado
 
-Después del primer deploy abrir una vez:
+Después de desplegar, abrir una vez:
 
-`https://<worker>.workers.dev/bootstrap`
+```text
+https://<worker>.workers.dev/bootstrap
+```
 
-Eso crea/activa la instancia `primary`, inicializa SQLite y abre los WebSockets. A partir de ahí una alarma del Durable Object revisa las conexiones y vacía los buckets pendientes periódicamente.
+Ese endpoint instancia/activa **ambos** collectors (`LiquidationCollector` y `OrderBookCollector`). A partir de ahí sus alarmas mantienen la recolección y limpieza periódicas aunque no haya un navegador abierto.
+
+Luego verificar:
+
+```text
+https://<worker>.workers.dev/health
+https://<worker>.workers.dev/v1/orderbook/health
+https://<worker>.workers.dev/v1/liquidations/symbols
+https://<worker>.workers.dev/v1/orderbook/symbols
+```
+
+---
 
 ## Desarrollo local
 
@@ -78,8 +243,17 @@ npm install
 npm run dev
 ```
 
-Validación de bundle/configuración sin desplegar:
+Validación del bundle/configuración:
 
 ```bash
 npm run check
 ```
+
+## Reglas de contribución
+
+- no importar módulos del frontend dentro del Worker;
+- minimizar escrituras por evento;
+- no guardar secretos en `wrangler.jsonc`;
+- mantener endpoints de lectura sin efectos destructivos;
+- no bajar el intervalo Cloudflare a 5 segundos sin recalcular primero el presupuesto de escrituras;
+- documentar cualquier cambio de retención/resolución en este README y en el README raíz.

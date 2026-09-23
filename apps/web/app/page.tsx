@@ -2,8 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { CapitalFlows } from "../components/capital-flows";
+import { ChartCaptureManager } from "../components/chart-capture-manager";
 import { LiquidationHeatmap } from "../components/liquidation-heatmap";
 import { LiquidationSummary } from "../components/liquidation-summary";
+import { LiquidityHeatmap } from "../components/liquidity-heatmap";
 import { MarketPulse } from "../components/market-pulse";
 import {
   aggregateOrderBooks,
@@ -20,12 +22,14 @@ import {
   type SourceStatus,
 } from "../lib/market/types";
 import { loadMarketUniverse } from "../lib/market/universe";
+import { useLiquidityHistory } from "../lib/market/use-liquidity-history";
 import { setMarketSymbol, useMarketEngine } from "../lib/market/use-market-engine";
 
 const compact = new Intl.NumberFormat("es-AR", {
   notation: "compact",
   maximumFractionDigits: 2,
 });
+const EMPTY_BOOKS: NonNullable<ReturnType<typeof useMarketEngine>["snapshots"][string]>["orderBooks"] = [];
 const LIQUIDATION_HOURS = [4, 12, 24] as const;
 const LIQUIDATION_SOURCES: Array<{ value: LiquidationMapSource; label: string }> = [
   { value: "aggregate", label: "Binance + Bybit + OKX" },
@@ -34,6 +38,11 @@ const LIQUIDATION_SOURCES: Array<{ value: LiquidationMapSource; label: string }>
   { value: "okx", label: "OKX" },
 ];
 const ORDERBOOK_SOURCES: ExchangeFilter[] = ["all", ...LIVE_EXCHANGES];
+const LIQUIDITY_WINDOWS = [
+  { label: "15 m", value: 15 * 60 * 1000 },
+  { label: "1 h", value: 60 * 60 * 1000 },
+  { label: "4 h", value: 4 * 60 * 60 * 1000 },
+] as const;
 const EXCHANGE_LABELS: Record<Exchange, string> = {
   binance: "Binance",
   bybit: "Bybit",
@@ -51,6 +60,7 @@ export default function Dashboard() {
   const [selectedSymbol, setSelectedSymbol] = useState(DEFAULT_SYMBOL);
   const [marketSearch, setMarketSearch] = useState("");
   const [exchangeFilter, setExchangeFilter] = useState<ExchangeFilter>("all");
+  const [liquidityWindowMs, setLiquidityWindowMs] = useState<number>(LIQUIDITY_WINDOWS[1].value);
   const [liquidationHours, setLiquidationHours] = useState<(typeof LIQUIDATION_HOURS)[number]>(24);
   const [liquidationSource, setLiquidationSource] = useState<LiquidationMapSource>("aggregate");
 
@@ -69,7 +79,7 @@ export default function Dashboard() {
   }, [selectedSymbol]);
 
   const snapshot = snapshots[selectedSymbol];
-  const books = snapshot?.orderBooks ?? [];
+  const books = snapshot?.orderBooks ?? EMPTY_BOOKS;
   const bybit = snapshot?.metrics.find((metric) => metric.exchange === "bybit");
   const binance = snapshot?.metrics.find((metric) => metric.exchange === "binance");
   const okx = snapshot?.metrics.find((metric) => metric.exchange === "okx");
@@ -83,6 +93,13 @@ export default function Dashboard() {
     () => aggregateOrderBooks(books, exchangeFilter, undefined, 24),
     [books, exchangeFilter],
   );
+  const liquidityBooks = useMemo(
+    () => exchangeFilter === "all" ? books : books.filter((book) => book.exchange === exchangeFilter),
+    [books, exchangeFilter],
+  );
+  const liquidityHistoryKey = `${selectedSymbol}::${exchangeFilter}`;
+  const liquidityFrames = useLiquidityHistory(liquidityHistoryKey, liquidityBooks);
+  const liquidityPrice = midpointFromBooks(liquidityBooks) ?? currentPrice;
   const liquidations = snapshot?.liquidations ?? [];
   const availableQuick = QUICK_SYMBOLS.filter((symbol) =>
     universe.length ? universe.some((market) => market.symbol === symbol) : true,
@@ -111,6 +128,8 @@ export default function Dashboard() {
 
   return (
     <main>
+      <ChartCaptureManager />
+
       <header className="topbar">
         <div>
           <p className="eyebrow">MERCADOS DE DERIVADOS · PERPETUOS</p>
@@ -282,6 +301,54 @@ export default function Dashboard() {
             <OrderSide title="Compras" levels={aggregated.bids} side="bid" />
           </div>
         </article>
+      </section>
+
+      <section className="panel liquidity-history-panel">
+        <div className="panel-head liquidation-panel-head">
+          <div>
+            <span className="kicker">HEATMAP DEL LIBRO DE ÓRDENES</span>
+            <h3>Liquidez límite visible a través del tiempo</h3>
+            <p>
+              El navegador conserva muestras locales de 5 s y las combina con snapshots centrales de
+              Cloudflare para mostrar continuidad histórica sin perder el detalle del momento actual.
+            </p>
+          </div>
+          <div className="map-controls">
+            <div className="segmented">
+              {ORDERBOOK_SOURCES.map((exchange) => (
+                <button
+                  type="button"
+                  key={`heatmap-${exchange}`}
+                  className={exchangeFilter === exchange ? "active" : ""}
+                  onClick={() => setExchangeFilter(exchange)}
+                >
+                  {exchange === "all" ? "Todos" : EXCHANGE_LABELS[exchange]}
+                </button>
+              ))}
+            </div>
+            <div className="segmented">
+              {LIQUIDITY_WINDOWS.map((window) => (
+                <button
+                  type="button"
+                  key={window.value}
+                  className={liquidityWindowMs === window.value ? "active" : ""}
+                  onClick={() => setLiquidityWindowMs(window.value)}
+                >
+                  {window.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <LiquidityHeatmap
+          frames={liquidityFrames}
+          windowMs={liquidityWindowMs}
+          currentPrice={liquidityPrice}
+        />
+        <p className="panel-footnote liquidity-footnote">
+          Órdenes limit visibles y cancelables. El histórico fino se conserva localmente en IndexedDB;
+          Cloudflare aporta snapshots de un minuto para continuidad 24/7 cuando existe cobertura central.
+        </p>
       </section>
 
       <section className="liquidation-grid">

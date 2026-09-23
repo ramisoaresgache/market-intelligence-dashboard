@@ -10,15 +10,24 @@ import {
 import type { LiquidityFrame, NormalizedOrderBook } from "./types";
 
 const SAMPLE_INTERVAL_MS = 5_000;
+const CENTRAL_REFRESH_MS = 60_000;
+const CENTRAL_HISTORY_HOURS = 4;
 export const LIQUIDITY_RETENTION_MS = 4 * 60 * 60 * 1000;
 
 type HistoryState = {
-  symbol: string;
+  key: string;
   frames: LiquidityFrame[];
 };
 
-export function useLiquidityHistory(symbol: string, books: NormalizedOrderBook[]): LiquidityFrame[] {
-  const [history, setHistory] = useState<HistoryState>({ symbol, frames: [] });
+type CentralPayload = {
+  symbol: string;
+  exchange: string;
+  frames?: LiquidityFrame[];
+};
+
+export function useLiquidityHistory(key: string, books: NormalizedOrderBook[]): LiquidityFrame[] {
+  const [localHistory, setLocalHistory] = useState<HistoryState>({ key, frames: [] });
+  const [centralHistory, setCentralHistory] = useState<HistoryState>({ key, frames: [] });
   const booksRef = useRef<NormalizedOrderBook[]>(books);
 
   useEffect(() => {
@@ -30,22 +39,22 @@ export function useLiquidityHistory(symbol: string, books: NormalizedOrderBook[]
     let sampleCount = 0;
     const since = Date.now() - LIQUIDITY_RETENTION_MS;
 
-    void loadLiquidityFrames(symbol, since)
+    void loadLiquidityFrames(key, since)
       .then((stored) => {
-        if (active) setHistory({ symbol, frames: stored });
+        if (active) setLocalHistory({ key, frames: stored });
       })
       .catch(() => {
-        if (active) setHistory({ symbol, frames: [] });
+        if (active) setLocalHistory({ key, frames: [] });
       });
 
     const timer = setInterval(() => {
-      const frame = buildLiquidityFrame(symbol, booksRef.current);
+      const frame = buildLiquidityFrame(key, booksRef.current);
       if (!frame) return;
       const cutoff = Date.now() - LIQUIDITY_RETENTION_MS;
-      setHistory((current) => ({
-        symbol,
+      setLocalHistory((current) => ({
+        key,
         frames: [
-          ...(current.symbol === symbol
+          ...(current.key === key
             ? current.frames.filter((item) => item.ts >= cutoff)
             : []),
           frame,
@@ -62,7 +71,45 @@ export function useLiquidityHistory(symbol: string, books: NormalizedOrderBook[]
       active = false;
       clearInterval(timer);
     };
-  }, [symbol]);
+  }, [key]);
 
-  return history.symbol === symbol ? history.frames : [];
+  useEffect(() => {
+    let active = true;
+    let timer: number | undefined;
+    const [marketSymbol, rawExchange = "all"] = key.split("::");
+    const exchange = rawExchange || "all";
+
+    const loadCentral = async () => {
+      if (!marketSymbol) return;
+      try {
+        const params = new URLSearchParams({
+          symbol: marketSymbol,
+          exchange,
+          hours: String(CENTRAL_HISTORY_HOURS),
+        });
+        const response = await fetch(`/api/orderbook-history?${params}`, { cache: "no-store" });
+        const payload = (await response.json()) as CentralPayload & { error?: string };
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        if (active) {
+          setCentralHistory({
+            key,
+            frames: Array.isArray(payload.frames) ? payload.frames : [],
+          });
+        }
+      } catch {
+        if (active) setCentralHistory({ key, frames: [] });
+      }
+    };
+
+    void loadCentral();
+    timer = window.setInterval(() => void loadCentral(), CENTRAL_REFRESH_MS);
+    return () => {
+      active = false;
+      if (timer !== undefined) window.clearInterval(timer);
+    };
+  }, [key]);
+
+  const local = localHistory.key === key ? localHistory.frames : [];
+  const central = centralHistory.key === key ? centralHistory.frames : [];
+  return [...central, ...local].sort((left, right) => left.ts - right.ts);
 }
