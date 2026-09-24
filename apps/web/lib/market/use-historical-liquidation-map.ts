@@ -8,8 +8,8 @@ import {
 } from "./engine/estimated-liquidations";
 
 const REST_BASE = "https://fapi.binance.com";
-const INTERVAL = "15m";
-const LIMIT = 96;
+const INTERVAL = "5m";
+const LIMIT = 288;
 const REFRESH_MS = 60_000;
 
 export interface HistoricalCandle {

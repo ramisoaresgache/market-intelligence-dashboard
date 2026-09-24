@@ -3,15 +3,19 @@
 import { useMemo, useState } from "react";
 import { EstimatedLiquidationHeatmap } from "../components/charts/estimated-liquidation-heatmap";
 import { LiquidityHeatmap } from "../components/charts/liquidity-heatmap";
+import { LiquidationProfileMap } from "../components/charts/liquidation-profile-map";
 import { CapitalFlows } from "../components/capital-flows";
 import { ObservedLiquidationSummary } from "../components/observed-liquidation-summary";
 import { MarketPulse } from "../components/market-pulse";
+import { FearGreedCard } from "../components/fear-greed-card";
+import { InfoTooltip } from "../components/info-tooltip";
 import { consolidateOrderBooks } from "../lib/market/engine/visualization";
 import { useEstimatedLiquidations } from "../lib/market/use-estimated-liquidations";
 import { useHistoricalLiquidationMap } from "../lib/market/use-historical-liquidation-map";
 import { useLiquidityHistory } from "../lib/market/use-liquidity-history";
 import { useMarketEngine } from "../lib/market/use-market-engine";
 import type {
+  ExchangeFilter,
   LiquidationEvent,
   MarketSnapshot,
   SourceStatus,
@@ -29,11 +33,13 @@ const price = new Intl.NumberFormat("en-US", {
 export default function Dashboard() {
   const { snapshots, sources, symbols } = useMarketEngine();
   const [activeSymbol, setActiveSymbol] = useState("BTCUSDT");
+  const [liquidityExchange, setLiquidityExchange] = useState<ExchangeFilter>("all");
   const [view, setView] = useState<DashboardView>("market");
   const snapshot = snapshots[activeSymbol];
-  const history = useLiquidityHistory(activeSymbol, snapshot);
+  const history = useLiquidityHistory(activeSymbol, snapshot, liquidityExchange);
   const liquidationModel = useEstimatedLiquidations(activeSymbol, snapshot);
   const historicalLiquidations = useHistoricalLiquidationMap(activeSymbol);
+  const liquidationZones = useMemo(() => [...historicalLiquidations.zones, ...liquidationModel.zones], [historicalLiquidations.zones, liquidationModel.zones]);
   const book = useMemo(
     () => consolidateOrderBooks(snapshot?.orderBooks ?? []),
     [snapshot?.orderBooks],
@@ -87,40 +93,49 @@ export default function Dashboard() {
             <div className="market-title">
               <div className={`asset-orb ${asset.toLowerCase()}`}>{asset.slice(0, 1)}</div>
               <div>
-                <span className="section-kicker">{activeSymbol} · PERPETUAL</span>
+                <span className="section-kicker">{activeSymbol} · PERPETUO</span>
                 <h1>{asset}<em>/USDT</em></h1>
-                <p>Consolidated public data · Binance USD-M + Bybit Linear</p>
+                <p>Datos públicos consolidados · perpetuos de Binance · Bybit · BingX · Bitunix</p>
               </div>
             </div>
             <MarketPulse symbol={activeSymbol} currentPrice={mark} />
             <div className="live-price">
-              <small>MARK PRICE</small>
+              <small>PRECIO DE MARCA</small>
               <strong>{mark == null ? "—" : `$${price.format(mark)}`}</strong>
               <span className={snapshot?.ts ? "fresh" : "waiting"}>
-                <i /> {snapshot?.ts ? `updated ${time(snapshot.ts)}` : "awaiting market data"}
+                <i /> {snapshot?.ts ? `actualizado ${time(snapshot.ts)}` : "esperando datos de mercado"}
               </span>
             </div>
           </section>
 
           <section className="metric-ribbon" aria-label={`${activeSymbol} live metrics`}>
-            <HeroMetric label="BEST BID" value={formatPrice(book.bestBid)} tone="bid" foot="cross-venue" />
-            <HeroMetric label="BEST ASK" value={formatPrice(book.bestAsk)} tone="ask" foot="cross-venue" />
+            <HeroMetric label="MEJOR COMPRA" value={formatPrice(book.bestBid)} tone="bid" foot="mayor precio comprador" help="Precio más alto que un comprador ofrece ahora entre los libros visibles. No incluye comisiones ni deslizamiento." />
+            <HeroMetric label="MEJOR VENTA" value={formatPrice(book.bestAsk)} tone="ask" foot="menor precio vendedor" help="Precio más bajo al que un vendedor ofrece ahora entre los libros visibles." />
             <HeroMetric
-              label={book.crossed ? "CROSSED MARKET" : "SPREAD"}
+              label={book.crossed ? "MERCADO CRUZADO" : "DIFERENCIAL"}
               value={formatSpread(book.crossVenueSpread)}
               tone={book.crossed ? "warning" : ""}
-              foot={book.crossed ? "quotes overlap across venues" : "best ask − best bid"}
+              foot={book.crossed ? "precios solapados entre exchanges" : "venta − compra"}
+              help="Diferencia entre la mejor venta y la mejor compra consolidadas. Si es negativa, hay precios solapados entre exchanges; no implica arbitraje ejecutable por latencia, comisiones y profundidad."
             />
-            <HeroMetric label="OPEN INTEREST" value={money(bybit?.openInterestValue)} foot="Bybit notional" />
-            <HeroMetric label="BINANCE OI" value={number(binance?.openInterest)} foot="contracts" />
-            <HeroMetric label="FUNDING" value={funding(bybit?.fundingRate)} tone={fundingTone(bybit?.fundingRate)} foot={bybit?.nextFundingTime ? `next ${time(bybit.nextFundingTime)}` : "Bybit"} />
+            <HeroMetric label="INTERÉS ABIERTO" value={money(bybit?.openInterestValue)} foot="nocional en Bybit" help="Valor nocional aproximado de las posiciones de derivados que siguen abiertas en Bybit. No es volumen negociado." />
+            <HeroMetric label="IA BINANCE" value={number(binance?.openInterest)} foot="contratos abiertos" help="Cantidad de contratos perpetuos abiertos informada por Binance. Su unidad no es comparable directamente con el nocional en dólares de Bybit." />
+            <HeroMetric label="FINANCIAMIENTO" value={funding(bybit?.fundingRate)} tone={fundingTone(bybit?.fundingRate)} foot={bybit?.nextFundingTime ? `próximo ${time(bybit.nextFundingTime)}` : "Bybit"} help="Pago periódico entre largos y cortos. Una tasa positiva suele significar que los largos pagan a los cortos; una negativa, lo contrario." />
+            <FearGreedCard />
           </section>
 
           {view === "market" ? <section className="dashboard-grid market-maps section-view">
-            <LiquidityHeatmap symbol={activeSymbol} history={history} candles={historicalLiquidations.candles} />
+            <LiquidityHeatmap
+              symbol={activeSymbol}
+              history={history}
+              candles={historicalLiquidations.candles}
+              exchange={liquidityExchange}
+              onExchangeChange={setLiquidityExchange}
+            />
+            <LiquidationProfileMap symbol={activeSymbol} currentPrice={mark} zones={liquidationZones} candles={historicalLiquidations.candles} />
             <EstimatedLiquidationHeatmap
               symbol={activeSymbol} samples={liquidationModel.samples} candles={historicalLiquidations.candles}
-              zones={[...historicalLiquidations.zones, ...liquidationModel.zones]}
+              zones={liquidationZones}
               observed={snapshot?.liquidations ?? []} historyState={historicalLiquidations.state}
             />
           </section> : null}
@@ -188,8 +203,8 @@ function NavLink({ view, icon, label, current, onSelect }: { view: DashboardView
   return <button type="button" onClick={() => onSelect(view)} className={current === view ? "active" : ""}><span className={`nav-icon ${icon}`} />{label}</button>;
 }
 
-function HeroMetric({ label, value, foot, tone = "" }: { label: string; value: string; foot: string; tone?: string }) {
-  return <div className="hero-stat"><span>{label}</span><b className={tone}>{value}</b><small>{foot}</small></div>;
+function HeroMetric({ label, value, foot, help, tone = "" }: { label: string; value: string; foot: string; help: string; tone?: string }) {
+  return <div className="hero-stat"><div className="hero-stat-label"><span>{label}</span><InfoTooltip label={label} text={help} /></div><b className={tone}>{value}</b><small>{foot}</small></div>;
 }
 
 function LiquidationsPanel({ symbol, snapshot }: { symbol: string; snapshot?: MarketSnapshot }) {
@@ -245,7 +260,7 @@ function MarketQualityPanel({ sources, snapshot }: { sources: SourceStatus[]; sn
         })}
         <div><span className="health-light online" /><p><b>UI publisher</b><small>Worker → React snapshots</small></p><em>150 MS</em></div>
       </div>
-      <p className="quality-note">Binance liquidations are partial snapshots. Bybit <code>allLiquidation</code> is shown as all according to source coverage.</p>
+      <p className="quality-note">Order books: Binance, Bybit, BingX and Bitunix. Observed liquidations: Binance partial snapshots and Bybit <code>allLiquidation</code>; BingX and Bitunix are not labeled as liquidation sources because their public documentation does not expose an equivalent feed.</p>
     </section>
   );
 }

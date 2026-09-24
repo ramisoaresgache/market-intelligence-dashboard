@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { parseBinanceDepth, parseBinanceLiquidations } from "../adapters/binance";
 import { parseBybitLiquidations, parseBybitTicker } from "../adapters/bybit";
+import { parseBingxDepth } from "../adapters/bingx";
+import { parseBitunixDepth } from "../adapters/bitunix";
 
 describe("exchange parsers", () => {
   it("parses Binance depth and maps liquidation position side", () => {
@@ -61,5 +63,35 @@ describe("exchange parsers", () => {
       ts: 9,
       data: { symbol: "BTCUSDT", ask1Price: "100" },
     })).toEqual({ exchange: "bybit", symbol: "BTCUSDT", ts: 9 });
+  });
+
+  it("normalizes BingX perpetual depth snapshots", () => {
+    expect(parseBingxDepth({
+      dataType: "BTC-USDT@depth100@200ms",
+      data: {
+        T: 12,
+        bids: [["100", "2"], ["99", "3"]],
+        asks: [["101", "4"]],
+      },
+    })).toEqual({
+      exchange: "bingx",
+      symbol: "BTCUSDT",
+      ts: 12,
+      bids: [
+        { price: 100, qty: 2, notional: 200 },
+        { price: 99, qty: 3, notional: 297 },
+      ],
+      asks: [{ price: 101, qty: 4, notional: 404 }],
+    });
+  });
+
+  it("accepts only documented Bitunix depth_books payloads", () => {
+    expect(parseBitunixDepth(JSON.stringify({
+      ch: "depth_books",
+      symbol: "ETHUSDT",
+      ts: 15,
+      data: { b: [["100", "2"]], a: [["101", "3"]] },
+    }))).toMatchObject({ ch: "depth_books", symbol: "ETHUSDT", ts: 15 });
+    expect(parseBitunixDepth(JSON.stringify({ op: "ping", pong: 1 }))).toBeNull();
   });
 });

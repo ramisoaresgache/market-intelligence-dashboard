@@ -12,20 +12,22 @@ La especificación actual del proyecto está en:
 
 La arquitectura vigente es **frontend-first** y está diseñada para funcionar con coste de infraestructura inicial de **USD 0**.
 
-## Arquitectura actual (PR 2)
+## Arquitectura actual
 
 ```text
 Vercel / Next.js
       │
       ├── Browser Market Engine
       │     ├── Binance WebSocket
-      │     └── Bybit WebSocket
+      │     ├── Bybit WebSocket
+      │     ├── BingX WebSocket (GZIP)
+      │     └── Bitunix WebSocket
       │
       └── Web Worker
             └── snapshots UI cada 150 ms
 ```
 
-El dashboard ya consume Binance USD-M y Bybit Linear directamente desde el navegador. No necesita `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_WS_URL` ni FastAPI levantado.
+El dashboard consume Binance USD-M, Bybit Linear, BingX Perpetual y Bitunix Futures directamente desde el navegador. No necesita `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_WS_URL` ni FastAPI levantado.
 
 La interfaz está dividida en vistas para evitar scroll vertical innecesario:
 
@@ -34,7 +36,7 @@ La interfaz está dividida en vistas para evitar scroll vertical innecesario:
 - **Flujos y reservas**: entradas, salidas y saldo agregado de BTC en exchanges; flujos ETF spot si se configura el proveedor.
 - **Noticias**: módulo reservado, todavía sin fuentes sintéticas ni contenido inventado.
 
-Un único `MarketConnectionManager` por pestaña inicia un Web Worker. El worker mantiene las conexiones, valida y normaliza los order books a frecuencia nativa, conserva el estado y publica un snapshot coalescido hacia React cada 150 ms. Cada exchange reconecta de forma independiente con backoff, por lo que una caída parcial no detiene la otra fuente.
+Un único `MarketConnectionManager` por pestaña inicia un Web Worker. El worker mantiene las conexiones, valida y normaliza los order books a frecuencia nativa, conserva el estado y publica un snapshot coalescido hacia React cada 150 ms. Cada exchange reconecta de forma independiente con backoff, por lo que una caída parcial no detiene las demás fuentes. El mapa permite elegir `Consolidado`, `Binance`, `Bybit`, `BingX` o `Bitunix`; el filtro se aplica tanto al historial de Cloudflare como al libro en vivo.
 
 El backend FastAPI permanece en `services/api` sólo como referencia de migración y no fue eliminado en este PR.
 
@@ -42,9 +44,11 @@ El backend FastAPI permanece en `services/api` sólo como referencia de migraci�
 
 - Binance USD-M: depth incremental + snapshot REST, `!forceOrder@arr` y open interest REST.
 - Bybit Linear: `orderbook.50`, `allLiquidation` y `tickers` (mark/last, open interest y funding).
-- Símbolos: BTCUSDT, ETHUSDT y SOLUSDT.
+- BingX Perpetual: snapshots públicos `depth100`, descompresión GZIP y heartbeat Ping/Pong.
+- Bitunix Futures: `depth_books` público incremental y heartbeat explícito.
+- Símbolos: BTCUSDT, ETHUSDT, SOLUSDT, BCHUSDT, BNBUSDT y XRPUSDT.
 
-Las liquidaciones de Binance se etiquetan como cobertura parcial (`snapshot`). Las de Bybit se etiquetan como cobertura completa declarada por la fuente (`all`).
+Las liquidaciones de Binance se etiquetan como cobertura parcial (`snapshot`). Las de Bybit se etiquetan como cobertura completa declarada por la fuente (`all`). BingX y Bitunix aportan libro de órdenes, pero no se presentan como fuentes de liquidaciones observadas porque su documentación pública actual no ofrece un canal equivalente.
 
 ## Módulos objetivo
 
@@ -123,6 +127,8 @@ Smoke test local realizado con FastAPI apagado:
 
 - Binance WebSocket y REST públicos: conexión directa correcta desde navegador.
 - Bybit WebSocket público: conexión directa correcta desde navegador.
+- BingX WebSocket público: conexión directa correcta, incluyendo frames GZIP y Ping/Pong.
+- Bitunix WebSocket público: conexión directa correcta con `depth_books` y heartbeat.
 - No se observaron bloqueos de `Origin` ni de CORS para las fuentes usadas.
 
 La disponibilidad final sigue dependiendo de la red del visitante y de los endpoints públicos de cada exchange. La UI muestra el estado `connecting`, `live` o `reconnecting` por fuente.

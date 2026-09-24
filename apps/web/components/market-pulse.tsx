@@ -11,7 +11,11 @@ type DailyPayload = {
   close: number;
   changeUsd: number;
   changePct: number;
-  points: Array<{ ts: number; price: number }>;
+  currentDayStart: number;
+  currentDayOpen: number;
+  currentDayChangeUsd: number;
+  currentDayChangePct: number;
+  points: Array<{ ts: number; price: number; open?: number }>;
 };
 
 const subscribeToHydration = () => () => undefined;
@@ -45,9 +49,16 @@ export function MarketPulse({ symbol, currentPrice }: { symbol: string; currentP
   const changeUsd = latest != null && data?.open != null ? latest - data.open : data?.changeUsd;
   const changePct = latest != null && data?.open ? ((latest - data.open) / data.open) * 100 : data?.changePct;
   const tone = (changeUsd ?? 0) >= 0 ? "positive" : "negative";
+  const currentDayChangeUsd = latest != null && data?.currentDayOpen != null
+    ? latest - data.currentDayOpen
+    : data?.currentDayChangeUsd;
+  const currentDayChangePct = latest != null && data?.currentDayOpen
+    ? ((latest - data.currentDayOpen) / data.currentDayOpen) * 100
+    : data?.currentDayChangePct;
+  const currentDayTone = (currentDayChangeUsd ?? 0) >= 0 ? "positive" : "negative";
   const option = useMemo(() => pulseOption(data?.points ?? [], tone), [data?.points, tone]);
   const { containerRef, exportPng } = useEChart(option);
-  const sessions = MARKET_SESSIONS.map((session) => ({ ...session, ...(hydrated ? marketSessionState(clock, session) : { open: false, localTime: "—", artHours: "—" }) }));
+  const sessions = MARKET_SESSIONS.map((session) => ({ ...session, ...(hydrated ? marketSessionState(clock, session) : { open: false, localTime: "—", utcHours: "—" }) }));
   const activeCount = sessions.filter((session) => session.open).length;
 
   return <section className="market-pulse" aria-label="Movimiento de mercado y sesiones activas">
@@ -61,12 +72,18 @@ export function MarketPulse({ symbol, currentPrice }: { symbol: string; currentP
       <div className="market-pulse-meta"><span>Apertura {formatPrice(data?.open)}</span><span>{data?.source ? data.source.toUpperCase() : error ?? "Cargando…"}</span></div>
     </div>
     <div className="market-sessions">
-      <header><span>SESIONES · HORARIO ART</span><b>{activeCount} ACTIVAS</b></header>
+      <header><span>SESIONES · HORARIO UTC</span><b>{activeCount} ACTIVAS</b></header>
       {sessions.map((session) => <div className="market-session" key={session.id}>
         <div><strong>{session.label}</strong><span>{session.city}</span></div>
-        <div className="market-session-hours" title={`Hora local: ${session.localTime} · rueda ${session.localHours}`}><b>{session.artHours}</b><small>ART · local {session.localTime}</small></div>
+        <div className="market-session-hours" title={`Hora local del mercado: ${session.localTime} · rueda ${session.localHours}`}><b>{session.utcHours}</b><small>UTC · local {session.localTime}</small></div>
         <span className={`session-state ${session.open ? "open" : "closed"}`}>{session.open ? "ABIERTA" : "CERRADA"}</span>
       </div>)}
+    </div>
+    <div className="current-day-move">
+      <span>HOY · DESDE 00:00 UTC</span>
+      <strong className={currentDayTone}>{signedPercent(currentDayChangePct)}</strong>
+      <b className={currentDayTone}>{signedMoney(currentDayChangeUsd)}</b>
+      <small>Apertura {formatPrice(data?.currentDayOpen)}</small>
     </div>
   </section>;
 }

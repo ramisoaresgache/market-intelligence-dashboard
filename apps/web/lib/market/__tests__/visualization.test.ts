@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { consolidateOrderBooks, niceBucketSize, percentile } from "../engine/visualization";
+import { filterOrderBooks } from "../use-liquidity-history";
 
 describe("market visualization helpers", () => {
   it("labels a crossed consolidated market instead of reporting a normal spread", () => {
@@ -59,5 +60,15 @@ describe("market visualization helpers", () => {
     expect(niceBucketSize(20.2)).toBe(50);
     expect(niceBucketSize(0.026)).toBe(0.05);
     expect(percentile([1, 2, 3, 4], 0.75)).toBe(4);
+  });
+
+  it("filters the heatmap source without changing the consolidated option", () => {
+    const books = [
+      { exchange: "binance" as const, symbol: "BTCUSDT", ts: 1, bids: [], asks: [] },
+      { exchange: "bingx" as const, symbol: "BTCUSDT", ts: 1, bids: [], asks: [] },
+      { exchange: "bitunix" as const, symbol: "BTCUSDT", ts: 1, bids: [], asks: [] },
+    ];
+    expect(filterOrderBooks(books, "bingx")).toEqual([books[1]]);
+    expect(filterOrderBooks(books, "all")).toBe(books);
   });
 });

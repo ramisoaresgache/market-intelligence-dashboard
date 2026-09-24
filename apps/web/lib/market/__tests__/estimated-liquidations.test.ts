@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   decayedExposure,
   estimateLiquidationZones,
+  liquidationZoneEnd,
+  type EstimatedLiquidationZone,
   type DerivativesSample,
 } from "../engine/estimated-liquidations";
 
@@ -44,5 +46,25 @@ describe("estimated liquidation model", () => {
       openInterestValue: 1_100_000,
     });
     expect(decayedExposure(zone, zone.createdAt + 30 * 60 * 1_000)).toBeCloseTo(zone.exposure / 2);
+  });
+
+  it("stops long and short bands when a candle reaches their level", () => {
+    const zone = (side: "long" | "short", liquidationPrice: number): EstimatedLiquidationZone => ({
+      id: side,
+      createdAt: 1_000,
+      entryPrice: 100,
+      liquidationPrice,
+      side,
+      leverage: 10,
+      exposure: 1_000,
+      confidence: "medium",
+    });
+    const candles = [
+      { openTime: 1_000, closeTime: 2_000, high: 104, low: 96 },
+      { openTime: 2_000, closeTime: 3_000, high: 106, low: 94 },
+    ];
+    expect(liquidationZoneEnd(zone("long", 95), candles, 5_000)).toBe(3_000);
+    expect(liquidationZoneEnd(zone("short", 105), candles, 5_000)).toBe(3_000);
+    expect(liquidationZoneEnd(zone("long", 90), candles, 5_000)).toBe(5_000);
   });
 });
