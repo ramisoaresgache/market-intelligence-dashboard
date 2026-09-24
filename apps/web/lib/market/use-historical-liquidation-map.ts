@@ -27,6 +27,7 @@ interface OpenInterestPoint {
 }
 
 type HistoricalMapData = {
+  symbol: string;
   candles: HistoricalCandle[];
   zones: EstimatedLiquidationZone[];
   state: "loading" | "live" | "unavailable";
@@ -34,6 +35,7 @@ type HistoricalMapData = {
 
 export function useHistoricalLiquidationMap(symbol: string): HistoricalMapData {
   const [data, setData] = useState<HistoricalMapData>({
+    symbol,
     candles: [],
     zones: [],
     state: "loading",
@@ -55,6 +57,7 @@ export function useHistoricalLiquidationMap(symbol: string): HistoricalMapData {
         const candles = parseBinanceKlines(await candleResponse.json());
         const openInterest = parseBinanceOpenInterest(await oiResponse.json());
         setData({
+          symbol,
           candles,
           zones: buildHistoricalZones(candles, openInterest),
           state: "live",
@@ -62,7 +65,9 @@ export function useHistoricalLiquidationMap(symbol: string): HistoricalMapData {
       } catch (error) {
         if (!controller.signal.aborted) {
           console.warn("Historical liquidation context unavailable", error);
-          setData((current) => ({ ...current, state: "unavailable" }));
+          setData((current) => current.symbol === symbol
+            ? { ...current, state: "unavailable" }
+            : { symbol, candles: [], zones: [], state: "unavailable" });
         }
       } finally {
         if (!controller.signal.aborted) timer = setTimeout(load, REFRESH_MS);
@@ -76,6 +81,9 @@ export function useHistoricalLiquidationMap(symbol: string): HistoricalMapData {
     };
   }, [symbol]);
 
+  if (data.symbol !== symbol) {
+    return { symbol, candles: [], zones: [], state: "loading" };
+  }
   return data;
 }
 

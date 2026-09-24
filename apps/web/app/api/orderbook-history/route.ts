@@ -33,6 +33,14 @@ export async function GET(request: Request) {
 
   try {
     const upstream = await fetch(`${baseUrl}/v1/orderbook/history?${params}`, { cache: "no-store" });
+    const contentType = upstream.headers.get("content-type") ?? "";
+    if (!contentType.includes("application/json")) {
+      const detail = (await upstream.text()).slice(0, 160).trim();
+      return NextResponse.json(
+        { error: "El colector histórico no devolvió JSON", status: upstream.status, detail },
+        { status: 502 },
+      );
+    }
     const payload = await upstream.json();
     if (!upstream.ok) {
       return NextResponse.json(payload, { status: upstream.status });
