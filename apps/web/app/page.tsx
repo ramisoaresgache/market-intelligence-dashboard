@@ -9,6 +9,7 @@ import { ObservedLiquidationSummary } from "../components/observed-liquidation-s
 import { MarketPulse } from "../components/market-pulse";
 import { FearGreedCard } from "../components/fear-greed-card";
 import { InfoTooltip } from "../components/info-tooltip";
+import { NewsIntelligence } from "../components/news-intelligence";
 import { consolidateOrderBooks } from "../lib/market/engine/visualization";
 import { useEstimatedLiquidations } from "../lib/market/use-estimated-liquidations";
 import { useHistoricalLiquidationMap } from "../lib/market/use-historical-liquidation-map";
@@ -152,22 +153,7 @@ export default function Dashboard() {
 
           {view === "flows" ? <div className="section-view"><CapitalFlows /></div> : null}
 
-          {view === "news" ? <section className="news-view section-view">
-            <section className="news-panel">
-              <div className="panel-heading compact-heading">
-                <div>
-                  <span className="section-kicker">NEWS & MACRO</span>
-                  <h2>Event intelligence</h2>
-                </div>
-                <span className="planned-badge">PLANNED</span>
-              </div>
-              <div className="empty-module">
-                <NewsIcon />
-                <strong>Official sources not connected yet</strong>
-                <p>FED, SEC, GDELT and macro feeds belong to the next scoped module. No synthetic headlines are shown.</p>
-              </div>
-            </section>
-          </section> : null}
+          {view === "news" ? <div className="news-view section-view"><NewsIntelligence /></div> : null}
 
           <footer className="app-footer">
             <span>MARKET INTELLIGENCE / PUBLIC MVP</span>
@@ -265,10 +251,6 @@ function MarketQualityPanel({ sources, snapshot }: { sources: SourceStatus[]; sn
       <p className="quality-note">Order books: Binance, Bybit, BingX and Bitunix. Observed liquidations: Binance partial snapshots and Bybit <code>allLiquidation</code>; BingX and Bitunix are not labeled as liquidation sources because their public documentation does not expose an equivalent feed.</p>
     </section>
   );
-}
-
-function NewsIcon() {
-  return <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M10 9h25a3 3 0 0 1 3 3v27H13a3 3 0 0 1-3-3V9Zm0 25H7a3 3 0 0 0 3 3m7-20h14M17 23h14M17 29h9" /></svg>;
 }
 
 function overallState(sources: SourceStatus[]): "connecting" | "live" | "reconnecting" {
