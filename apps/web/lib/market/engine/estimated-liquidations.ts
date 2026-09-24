@@ -91,6 +91,40 @@ export function decayedExposure(
   return zone.exposure * 0.5 ** (age / halfLifeMs);
 }
 
+export interface PriceRangeCandle {
+  openTime: number;
+  closeTime: number;
+  high: number;
+  low: number;
+}
+
+/**
+ * Ends a modeled band on the candle that first reaches its liquidation level.
+ * A long zone is consumed by the candle low; a short zone by the candle high.
+ */
+export function liquidationZoneEnd(
+  zone: EstimatedLiquidationZone,
+  candles: PriceRangeCandle[],
+  fallbackEnd: number,
+): number {
+  const crossing = candles.find((candle) => candleConsumesZone(zone, candle));
+  return crossing ? Math.min(fallbackEnd, Math.max(zone.createdAt, crossing.closeTime)) : fallbackEnd;
+}
+
+export function isLiquidationZoneConsumed(
+  zone: EstimatedLiquidationZone,
+  candles: PriceRangeCandle[],
+): boolean {
+  return candles.some((candle) => candleConsumesZone(zone, candle));
+}
+
+function candleConsumesZone(zone: EstimatedLiquidationZone, candle: PriceRangeCandle): boolean {
+  if (candle.closeTime <= zone.createdAt) return false;
+  return zone.side === "long"
+    ? candle.low <= zone.liquidationPrice
+    : candle.high >= zone.liquidationPrice;
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }

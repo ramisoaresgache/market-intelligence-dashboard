@@ -6,6 +6,8 @@ type Listener = () => void;
 const INITIAL_SOURCES: SourceStatus[] = [
   { exchange: "binance", connected: false, state: "connecting", detail: "Waiting for worker" },
   { exchange: "bybit", connected: false, state: "connecting", detail: "Waiting for worker" },
+  { exchange: "bingx", connected: false, state: "connecting", detail: "Waiting for worker" },
+  { exchange: "bitunix", connected: false, state: "connecting", detail: "Waiting for worker" },
 ];
 
 const INITIAL_STATE: MarketViewState = {

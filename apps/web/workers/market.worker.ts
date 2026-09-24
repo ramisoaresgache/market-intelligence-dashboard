@@ -2,6 +2,8 @@
 
 import { BinanceAdapter } from "../lib/market/adapters/binance";
 import { BybitAdapter } from "../lib/market/adapters/bybit";
+import { BingxAdapter } from "../lib/market/adapters/bingx";
+import { BitunixAdapter } from "../lib/market/adapters/bitunix";
 import { CoalescedPublisher, MarketStore } from "../lib/market/engine/store";
 import type { MarketAdapter } from "../lib/market/adapters/base";
 import type { MarketEvent, WorkerCommand, WorkerEvent } from "../lib/market/types";
@@ -22,7 +24,12 @@ function receive(event: MarketEvent): void {
 
 function start(): void {
   if (adapters.length) return;
-  adapters = [new BinanceAdapter(receive), new BybitAdapter(receive)];
+  adapters = [
+    new BinanceAdapter(receive),
+    new BybitAdapter(receive),
+    new BingxAdapter(receive),
+    new BitunixAdapter(receive),
+  ];
   for (const adapter of adapters) adapter.start();
 }
 

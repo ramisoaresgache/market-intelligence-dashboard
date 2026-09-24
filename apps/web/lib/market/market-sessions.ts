@@ -15,19 +15,24 @@ export const MARKET_SESSIONS: MarketSession[] = [
   { id: "new-york", label: "NUEVA YORK", city: "NYSE · Nasdaq", timeZone: "America/New_York", openMinute: 9 * 60 + 30, closeMinute: 16 * 60, localHours: "09:30–16:00" },
 ];
 
-const ART_TIME_ZONE = "America/Argentina/Buenos_Aires";
+const UTC_TIME_ZONE = "UTC";
+
+export function startOfUtcDay(now: number): number {
+  const date = new Date(now);
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
 
 export function marketSessionState(now: number, session: MarketSession) {
   const local = timeParts(now, session.timeZone);
-  const art = timeParts(now, ART_TIME_ZONE);
+  const utc = timeParts(now, UTC_TIME_ZONE);
   const localMinute = local.hour * 60 + local.minute;
-  const artMinute = art.hour * 60 + art.minute;
-  const artOffset = artMinute - localMinute;
+  const utcMinute = utc.hour * 60 + utc.minute;
+  const utcOffset = utcMinute - localMinute;
   const businessDay = !["Sat", "Sun"].includes(local.weekday);
   return {
     open: businessDay && localMinute >= session.openMinute && localMinute < session.closeMinute,
     localTime: formatMinute(localMinute),
-    artHours: `${formatMinute(session.openMinute + artOffset)}–${formatMinute(session.closeMinute + artOffset)}`,
+    utcHours: `${formatMinute(session.openMinute + utcOffset)}–${formatMinute(session.closeMinute + utcOffset)}`,
   };
 }
 
