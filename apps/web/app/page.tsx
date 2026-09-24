@@ -126,14 +126,16 @@ export default function Dashboard() {
 
           {view === "market" ? <section className="dashboard-grid market-maps section-view">
             <LiquidityHeatmap
+              key={`orderbook-${activeSymbol}`}
               symbol={activeSymbol}
               history={history}
               candles={historicalLiquidations.candles}
               exchange={liquidityExchange}
               onExchangeChange={setLiquidityExchange}
             />
-            <LiquidationProfileMap symbol={activeSymbol} currentPrice={mark} zones={liquidationZones} candles={historicalLiquidations.candles} />
+            <LiquidationProfileMap key={`profile-${activeSymbol}`} symbol={activeSymbol} currentPrice={mark} zones={liquidationZones} candles={historicalLiquidations.candles} />
             <EstimatedLiquidationHeatmap
+              key={`liquidations-${activeSymbol}`}
               symbol={activeSymbol} samples={liquidationModel.samples} candles={historicalLiquidations.candles}
               zones={liquidationZones}
               observed={snapshot?.liquidations ?? []} historyState={historicalLiquidations.state}

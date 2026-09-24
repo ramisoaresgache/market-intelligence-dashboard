@@ -75,7 +75,7 @@ export function MarketPulse({ symbol, currentPrice }: { symbol: string; currentP
       <header><span>SESIONES · HORARIO UTC</span><b>{activeCount} ACTIVAS</b></header>
       {sessions.map((session) => <div className="market-session" key={session.id}>
         <div><strong>{session.label}</strong><span>{session.city}</span></div>
-        <div className="market-session-hours" title={`Hora local del mercado: ${session.localTime} · rueda ${session.localHours}`}><b>{session.utcHours}</b><small>UTC · local {session.localTime}</small></div>
+        <div className="market-session-hours" title={`Horario de rueda expresado en UTC: ${session.utcHours}`}><b>{session.utcHours}</b><small>UTC</small></div>
         <span className={`session-state ${session.open ? "open" : "closed"}`}>{session.open ? "ABIERTA" : "CERRADA"}</span>
       </div>)}
     </div>
