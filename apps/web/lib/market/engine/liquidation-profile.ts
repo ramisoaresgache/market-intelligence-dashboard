@@ -9,6 +9,18 @@ export interface LiquidationProfileBin {
   accumulatedShort: number;
 }
 
+export interface KeyLiquidationLevel {
+  price: number;
+  exposure: number;
+  distancePercent: number;
+  side: "long" | "short";
+}
+
+export interface KeyLiquidationLevels {
+  upper: KeyLiquidationLevel | null;
+  lower: KeyLiquidationLevel | null;
+}
+
 export function buildLiquidationProfile(
   zones: EstimatedLiquidationZone[],
   currentPrice: number,
@@ -60,4 +72,42 @@ export function profileBucketSize(price: number): number {
   const fraction = raw / exponent;
   const nice = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
   return nice * exponent;
+}
+
+export function findKeyLiquidationLevels(
+  profile: LiquidationProfileBin[],
+  currentPrice: number,
+): KeyLiquidationLevels {
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0) return { upper: null, lower: null };
+
+  const upper = strongestLevel(
+    profile.filter((row) => row.price > currentPrice && row.shortExposure > 0),
+    currentPrice,
+    "short",
+  );
+  const lower = strongestLevel(
+    profile.filter((row) => row.price < currentPrice && row.longExposure > 0),
+    currentPrice,
+    "long",
+  );
+  return { upper, lower };
+}
+
+function strongestLevel(
+  rows: LiquidationProfileBin[],
+  currentPrice: number,
+  side: KeyLiquidationLevel["side"],
+): KeyLiquidationLevel | null {
+  const exposureKey = side === "short" ? "shortExposure" : "longExposure";
+  const strongest = [...rows].sort((left, right) => {
+    const exposureDifference = right[exposureKey] - left[exposureKey];
+    return exposureDifference || Math.abs(left.price - currentPrice) - Math.abs(right.price - currentPrice);
+  })[0];
+  if (!strongest) return null;
+  return {
+    price: strongest.price,
+    exposure: strongest[exposureKey],
+    distancePercent: Math.abs((strongest.price / currentPrice - 1) * 100),
+    side,
+  };
 }

@@ -29,6 +29,12 @@ type NewsArticle = {
   sourceCountry: string;
 };
 
+type CalendarAttribution = {
+  source: string;
+  url: string;
+  terms?: string;
+};
+
 const rangeLabels: Record<Range, string> = {
   today: "Hoy",
   tomorrow: "Mañana",
@@ -49,6 +55,8 @@ export function NewsIntelligence() {
   const [calendarState, setCalendarState] = useState<LoadState>("loading");
   const [newsState, setNewsState] = useState<LoadState>("loading");
   const [calendarMessage, setCalendarMessage] = useState("");
+  const [calendarAttribution, setCalendarAttribution] = useState<CalendarAttribution | null>(null);
+  const [calendarFallback, setCalendarFallback] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const refresh = useCallback(() => {
@@ -65,12 +73,16 @@ export function NewsIntelligence() {
         if (!response.ok) throw new Error(payload.error || "No se pudo cargar el calendario");
         setEvents(payload.events ?? []);
         setCalendarMessage(payload.message ?? "");
+        setCalendarAttribution(payload.attribution ?? null);
+        setCalendarFallback(Boolean(payload.fallback));
         setCalendarState(payload.state ?? "unavailable");
       })
       .catch((error: Error) => {
         if (error.name !== "AbortError") {
           setEvents([]);
           setCalendarMessage(error.message);
+          setCalendarAttribution(null);
+          setCalendarFallback(false);
           setCalendarState("unavailable");
         }
       });
@@ -111,7 +123,7 @@ export function NewsIntelligence() {
           <div className="calendar-toolbar">
             <div>
               <strong>Calendario económico</strong>
-              <span>IMPACTO ESPERADO EN CRIPTO</span>
+              <span>{calendarState === "live" ? `${events.length} EVENTOS · IMPACTO ESPERADO EN CRIPTO` : "IMPACTO ESPERADO EN CRIPTO"}</span>
             </div>
             <nav aria-label="Rango del calendario">
               {(Object.keys(rangeLabels) as Range[]).map((item) => (
@@ -147,12 +159,15 @@ export function NewsIntelligence() {
               </table>
             </div>
           )}
-          <p className="calendar-disclaimer">La lectura cripto describe una reacción habitual condicionada por la sorpresa del dato; no es una predicción ni asesoramiento financiero. Fuente gratuita: <a href="https://www.financecalendar.com" target="_blank" rel="noopener noreferrer">Finance Calendar</a>.</p>
+          <p className="calendar-disclaimer">
+            La lectura cripto describe una reacción habitual condicionada por la sorpresa del dato; no es una predicción ni asesoramiento financiero.
+            {calendarAttribution ? <> Fuente: <a href={calendarAttribution.url} target="_blank" rel="noopener noreferrer">{calendarAttribution.source}</a>{calendarFallback ? " · cobertura reducida de respaldo." : " · fuente pública sin garantía contractual."}</> : null}
+          </p>
         </section>
 
         <aside className="spanish-news-panel">
           <header><div><strong>Noticias importantes</strong><span>PUBLICADAS EN ESPAÑOL</span></div><i className={newsState === "live" ? "live" : ""}>{newsState === "live" ? "EN VIVO" : newsState.toUpperCase()}</i></header>
-          {newsState === "loading" ? <PanelState text="Buscando noticias en español…" /> : newsState === "unavailable" ? <PanelState text="GDELT no está disponible en este momento." /> : (
+          {newsState === "loading" ? <PanelState text="Buscando noticias en español…" /> : newsState === "unavailable" ? <PanelState text="Las fuentes RSS no están disponibles en este momento." /> : (
             <div className="news-feed">
               {articles.slice(0, 14).map((article) => (
                 <a key={article.url} href={article.url} target="_blank" rel="noopener noreferrer">
@@ -164,7 +179,7 @@ export function NewsIntelligence() {
               {!articles.length ? <PanelState text="No se encontraron noticias en español durante la última semana." /> : null}
             </div>
           )}
-          <footer>Fuente: GDELT DOC 2.0 · Los titulares enlazan al medio original.</footer>
+          <footer>Fuentes: CriptoNoticias RSS y Google Noticias RSS · Los titulares enlazan a la publicación original.</footer>
         </aside>
       </div>
     </section>
