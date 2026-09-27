@@ -4,6 +4,9 @@ const SNAPSHOT_MS = 60_000;
 const RETENTION_MS = 48 * 60 * 60 * 1000;
 const DEPTH_LIMIT = 30;
 const MAX_HISTORY_HOURS = 48;
+const HISTORY_CACHE_MS = 5 * 60 * 1000;
+const HEALTH_CACHE_MS = 15 * 60 * 1000;
+const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 const DEFAULT_SYMBOLS = [
   "BTCUSDT",
   "ETHUSDT",
@@ -70,15 +73,38 @@ type SourceHealth = {
   lastError: string | null;
 };
 
+type HistoryPayload = {
+  generatedAt: number;
+  symbol: string;
+  exchange: ExchangeFilter;
+  requestedHours: number;
+  storageResolutionMs: number;
+  retentionMs: number;
+  coverageStart: number | null;
+  frames: LiquidityFrame[];
+  sourcesUsed: string[];
+  centralSources: OrderBookSource[];
+  warning: string | null;
+};
+
+type StorageStats = {
+  rows: number;
+  firstSnapshotAt: number | null;
+  lastSnapshotAt: number | null;
+};
+
 export class OrderBookCollector extends DurableObject<Env> {
   private readonly sql: SqlStorage;
   private readonly symbols: Set<string>;
   private readonly sourceHealth = new Map<OrderBookSource, SourceHealth>();
   private readonly okxContractValues = new Map<string, number>();
   private readonly mexcContractSizes = new Map<string, number>();
+  private readonly historyCache = new Map<string, { expiresAt: number; payload: HistoryPayload }>();
   private metadataPromise: Promise<void> | null = null;
   private collecting = false;
   private lastCollectionAt: number | null = null;
+  private lastPrunedAt = 0;
+  private cachedStorageStats: { expiresAt: number; value: StorageStats } | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -134,7 +160,7 @@ export class OrderBookCollector extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     await this.collectMinute();
-    this.pruneOldRows();
+    this.maybePruneOldRows();
     await this.scheduleAlarm();
   }
 
@@ -147,9 +173,10 @@ export class OrderBookCollector extends DurableObject<Env> {
         PRIMARY KEY (symbol, bucket_ts)
       );
     `);
+    this.sql.exec(`DROP INDEX IF EXISTS idx_orderbook_snapshots_symbol_ts;`);
     this.sql.exec(`
-      CREATE INDEX IF NOT EXISTS idx_orderbook_snapshots_symbol_ts
-      ON orderbook_snapshots(symbol, bucket_ts);
+      CREATE INDEX IF NOT EXISTS idx_orderbook_snapshots_ts
+      ON orderbook_snapshots(bucket_ts);
     `);
   }
 
@@ -337,8 +364,29 @@ export class OrderBookCollector extends DurableObject<Env> {
     return requireBook("Bitunix", Date.now(), bids, asks);
   }
 
-  private buildHistory(symbol: string, exchange: ExchangeFilter, hours: number) {
+  private buildHistory(symbol: string, exchange: ExchangeFilter, hours: number): HistoryPayload {
     const now = Date.now();
+    const browserOnly = exchange === "binance" || exchange === "bingx";
+    if (browserOnly) {
+      return {
+        generatedAt: now,
+        symbol,
+        exchange,
+        requestedHours: hours,
+        storageResolutionMs: SNAPSHOT_MS,
+        retentionMs: RETENTION_MS,
+        coverageStart: null,
+        frames: [],
+        sourcesUsed: [],
+        centralSources: [...CENTRAL_SOURCES],
+        warning: `${exchange} se mantiene browser-side; Cloudflare no guarda histórico central de esa fuente.`,
+      };
+    }
+
+    const cacheKey = `${symbol}|${exchange}|${hours.toFixed(2)}`;
+    const cached = this.historyCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) return cached.payload;
+
     const cutoff = now - hours * 60 * 60 * 1000;
     const rows = Array.from(
       this.sql.exec<SnapshotRow>(
@@ -369,8 +417,7 @@ export class OrderBookCollector extends DurableObject<Env> {
       ),
     )[0]?.first_ts;
 
-    const browserOnly = exchange === "binance" || exchange === "bingx";
-    return {
+    const payload: HistoryPayload = {
       generatedAt: now,
       symbol,
       exchange,
@@ -381,28 +428,42 @@ export class OrderBookCollector extends DurableObject<Env> {
       frames,
       sourcesUsed: [...sourcesUsed],
       centralSources: [...CENTRAL_SOURCES],
-      warning: browserOnly
-        ? `${exchange} se mantiene browser-side; Cloudflare no guarda histórico central de esa fuente.`
-        : null,
+      warning: null,
     };
+    if (this.historyCache.size >= 128) {
+      const oldestKey = this.historyCache.keys().next().value;
+      if (oldestKey) this.historyCache.delete(oldestKey);
+    }
+    this.historyCache.set(cacheKey, { expiresAt: now + HISTORY_CACHE_MS, payload });
+    return payload;
   }
 
-  private storageStats() {
+  private storageStats(): StorageStats {
+    const now = Date.now();
+    if (this.cachedStorageStats && this.cachedStorageStats.expiresAt > now) {
+      return this.cachedStorageStats.value;
+    }
+
     const row = Array.from(
       this.sql.exec<{ rows: number; first_ts: number | null; last_ts: number | null }>(
         `SELECT COUNT(*) AS rows, MIN(bucket_ts) AS first_ts, MAX(bucket_ts) AS last_ts
          FROM orderbook_snapshots`,
       ),
     )[0];
-    return {
+    const value = {
       rows: Number(row?.rows ?? 0),
       firstSnapshotAt: row?.first_ts ?? null,
       lastSnapshotAt: row?.last_ts ?? null,
     };
+    this.cachedStorageStats = { expiresAt: now + HEALTH_CACHE_MS, value };
+    return value;
   }
 
-  private pruneOldRows(): void {
-    this.sql.exec(`DELETE FROM orderbook_snapshots WHERE bucket_ts < ?`, Date.now() - RETENTION_MS);
+  private maybePruneOldRows(now = Date.now()): void {
+    if (now - this.lastPrunedAt < PRUNE_INTERVAL_MS) return;
+    this.sql.exec(`DELETE FROM orderbook_snapshots WHERE bucket_ts < ?`, now - RETENTION_MS);
+    this.lastPrunedAt = now;
+    this.cachedStorageStats = null;
   }
 
   private markSourceSuccess(source: OrderBookSource): void {

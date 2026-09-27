@@ -65,6 +65,8 @@ liquidation_buckets
 
 Los eventos se acumulan en memoria y se vacían como buckets de **1 minuto**. No se escribe una fila SQLite por evento WebSocket.
 
+El resumen móvil carga como máximo una vez por símbolo las últimas 24 horas desde SQLite y mantiene ese conjunto actualizado en memoria con cada flush. Las consultas repetidas de la UI reutilizan ese estado y no vuelven a escanear miles de buckets. Si el Durable Object se reinicia, la caché se reconstruye desde SQLite en la primera consulta de cada símbolo.
+
 ### Retención
 
 **72 horas** rodantes.
@@ -152,6 +154,8 @@ Browser IndexedDB: 5 segundos
 
 El histórico central y el local se combinan en el frontend. El central aporta continuidad mientras la PC está cerrada; el local aporta detalle fino durante la sesión.
 
+Las respuestas centrales se reutilizan durante 5 minutos. Para Binance y BingX, que son fuentes exclusivamente browser-side, el endpoint devuelve inmediatamente un histórico central vacío sin consultar SQLite.
+
 ### Endpoints
 
 ```text
@@ -201,6 +205,8 @@ Las filas dependen de la actividad: sólo hay bucket cuando hubo liquidaciones d
 - liquidaciones: `bucket_ts < now - 72h`.
 
 Los `DELETE` también son parte del costo de escritura, por eso se evita persistir snapshots de 5 segundos en Cloudflare.
+
+La limpieza se ejecuta como máximo una vez por hora y ambas tablas tienen un índice por `bucket_ts`, evitando escaneos completos cada minuto. Vercel conserva durante 5 minutos las respuestas del collector para compartir una sola lectura entre visitantes.
 
 ---
 

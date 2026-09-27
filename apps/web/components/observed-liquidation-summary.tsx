@@ -23,7 +23,7 @@ export function ObservedLiquidationSummary({ symbol, liquidations }: { symbol: s
     };
     void load();
     const clockTimer = window.setTimeout(() => setNow(Date.now()), 0);
-    const timer = window.setInterval(() => { setNow(Date.now()); void load(); }, 30_000);
+    const timer = window.setInterval(() => { setNow(Date.now()); void load(); }, 60_000);
     return () => { active = false; window.clearTimeout(clockTimer); window.clearInterval(timer); };
   }, [symbol]);
 

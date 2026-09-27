@@ -32,7 +32,9 @@ export async function GET(request: Request) {
   const params = new URLSearchParams({ symbol, exchange, hours: String(hours) });
 
   try {
-    const upstream = await fetch(`${baseUrl}/v1/orderbook/history?${params}`, { cache: "no-store" });
+    const upstream = await fetch(`${baseUrl}/v1/orderbook/history?${params}`, {
+      next: { revalidate: 300 },
+    });
     const contentType = upstream.headers.get("content-type") ?? "";
     if (!contentType.includes("application/json")) {
       const detail = (await upstream.text()).slice(0, 160).trim();
@@ -46,7 +48,7 @@ export async function GET(request: Request) {
       return NextResponse.json(payload, { status: upstream.status });
     }
     return NextResponse.json(payload, {
-      headers: { "Cache-Control": "public, s-maxage=20, stale-while-revalidate=40" },
+      headers: { "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600" },
     });
   } catch (error) {
     return NextResponse.json(

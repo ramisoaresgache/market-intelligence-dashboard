@@ -13,6 +13,7 @@ const BUCKET_MS = 60_000;
 const ALARM_MS = 60_000;
 const RETENTION_MS = 72 * 60 * 60 * 1000;
 const HEARTBEAT_MS = 20_000;
+const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 const DEFAULT_SYMBOLS = [
   "BTCUSDT",
   "ETHUSDT",
@@ -61,6 +62,12 @@ type BucketRow = {
   long_usd: number;
   short_usd: number;
   events: number;
+};
+
+type StorageStats = {
+  rows: number;
+  firstBucketAt: number | null;
+  lastBucketAt: number | null;
 };
 
 type ExchangeState = {
@@ -125,8 +132,12 @@ export class LiquidationCollector extends DurableObject<Env> {
   private readonly exchangeState = new Map<ExchangeKey, ExchangeState>();
   private readonly heartbeats = new Map<ActiveExchange, ReturnType<typeof setInterval>>();
   private readonly gateMultipliers = new Map<string, number>();
+  private readonly summaryRows = new Map<string, Map<string, BucketRow>>();
+  private readonly summaryCoverageStart = new Map<string, number | null>();
   private gateMultiplierLoad: Promise<void> | null = null;
   private flushing = false;
+  private lastPrunedAt = 0;
+  private cachedStorageStats: { expiresAt: number; value: StorageStats } | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -205,7 +216,8 @@ export class LiquidationCollector extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     await this.flushPending();
-    this.pruneOldRows();
+    this.maybePruneOldRows();
+    this.pruneSummaryRows();
     this.pruneFingerprints();
     await this.ensureConnections();
     await this.scheduleAlarm();
@@ -227,6 +239,10 @@ export class LiquidationCollector extends DurableObject<Env> {
       CREATE INDEX IF NOT EXISTS idx_liquidation_buckets_symbol_ts
       ON liquidation_buckets(symbol, bucket_ts);
     `);
+    this.sql.exec(`
+      CREATE INDEX IF NOT EXISTS idx_liquidation_buckets_ts
+      ON liquidation_buckets(bucket_ts);
+    `);
   }
 
   private async scheduleAlarm(): Promise<void> {
@@ -239,7 +255,6 @@ export class LiquidationCollector extends DurableObject<Env> {
     this.ensureBybit();
     this.ensureBitmex();
     await this.ensureGate();
-    await this.scheduleAlarm();
   }
 
   private ensureBybit(): void {
@@ -466,6 +481,7 @@ export class LiquidationCollector extends DurableObject<Env> {
           bucket.events,
         );
       }
+      for (const bucket of snapshot) this.mergeSummaryRow(bucket);
     } catch (error) {
       for (const bucket of snapshot) this.mergeBack(bucket);
       throw error;
@@ -488,32 +504,7 @@ export class LiquidationCollector extends DurableObject<Env> {
 
   private buildSummary(symbol: string) {
     const now = Date.now();
-    const cutoff24h = now - 24 * 60 * 60 * 1000;
-    const rows = Array.from(
-      this.sql.exec<BucketRow>(
-        `SELECT exchange, symbol, bucket_ts, long_usd, short_usd, events
-         FROM liquidation_buckets
-         WHERE symbol = ? AND bucket_ts >= ?
-         ORDER BY bucket_ts ASC`,
-        symbol,
-        cutoff24h - BUCKET_MS,
-      ),
-    );
-
-    const pending = [...this.pending.values()].filter(
-      (bucket) => bucket.symbol === symbol && bucket.bucketTs >= cutoff24h - BUCKET_MS,
-    );
-    const allRows: BucketRow[] = [
-      ...rows,
-      ...pending.map((bucket) => ({
-        exchange: bucket.exchange,
-        symbol: bucket.symbol,
-        bucket_ts: bucket.bucketTs,
-        long_usd: bucket.longUsd,
-        short_usd: bucket.shortUsd,
-        events: bucket.events,
-      })),
-    ];
+    const { rows: allRows, coverageStart } = this.summaryData(symbol, now);
 
     const windows = Object.fromEntries(
       WINDOWS.map((hours) => {
@@ -540,19 +531,12 @@ export class LiquidationCollector extends DurableObject<Env> {
       }),
     );
 
-    const firstStored = Array.from(
-      this.sql.exec<{ first_ts: number | null }>(
-        `SELECT MIN(bucket_ts) AS first_ts FROM liquidation_buckets WHERE symbol = ?`,
-        symbol,
-      ),
-    )[0]?.first_ts;
-
     return {
       generatedAt: now,
       symbol,
       bucketSizeMs: BUCKET_MS,
       retentionMs: RETENTION_MS,
-      coverageStart: firstStored ?? null,
+      coverageStart,
       windows,
       collector: {
         symbols: [...this.symbols],
@@ -562,21 +546,95 @@ export class LiquidationCollector extends DurableObject<Env> {
     };
   }
 
-  private storageStats() {
+  private summaryData(symbol: string, now: number): { rows: BucketRow[]; coverageStart: number | null } {
+    const cutoff = now - 24 * 60 * 60 * 1000 - BUCKET_MS;
+    let stored = this.summaryRows.get(symbol);
+
+    if (!stored) {
+      stored = new Map<string, BucketRow>();
+      for (const row of this.sql.exec<BucketRow>(
+        `SELECT exchange, symbol, bucket_ts, long_usd, short_usd, events
+         FROM liquidation_buckets
+         WHERE symbol = ? AND bucket_ts >= ?
+         ORDER BY bucket_ts ASC`,
+        symbol,
+        cutoff,
+      )) {
+        stored.set(summaryRowKey(row.exchange, Number(row.bucket_ts)), normalizeBucketRow(row));
+      }
+      this.summaryRows.set(symbol, stored);
+
+      const firstStored = Array.from(
+        this.sql.exec<{ first_ts: number | null }>(
+          `SELECT MIN(bucket_ts) AS first_ts FROM liquidation_buckets WHERE symbol = ?`,
+          symbol,
+        ),
+      )[0]?.first_ts;
+      this.summaryCoverageStart.set(symbol, firstStored == null ? null : Number(firstStored));
+    }
+
+    for (const [key, row] of stored) {
+      if (row.bucket_ts < cutoff) stored.delete(key);
+    }
+
+    const pending = [...this.pending.values()]
+      .filter((bucket) => bucket.symbol === symbol && bucket.bucketTs >= cutoff)
+      .map(pendingToBucketRow);
+
+    return {
+      rows: [...stored.values(), ...pending],
+      coverageStart: this.summaryCoverageStart.get(symbol) ?? null,
+    };
+  }
+
+  private mergeSummaryRow(bucket: PendingBucket): void {
+    const stored = this.summaryRows.get(bucket.symbol);
+    if (!stored) return;
+
+    const key = summaryRowKey(bucket.exchange, bucket.bucketTs);
+    const current = stored.get(key);
+    if (!current) {
+      stored.set(key, pendingToBucketRow(bucket));
+      return;
+    }
+
+    current.long_usd += bucket.longUsd;
+    current.short_usd += bucket.shortUsd;
+    current.events += bucket.events;
+  }
+
+  private storageStats(): StorageStats {
+    const now = Date.now();
+    if (this.cachedStorageStats && this.cachedStorageStats.expiresAt > now) {
+      return this.cachedStorageStats.value;
+    }
+
     const row = Array.from(
       this.sql.exec<{ rows: number; first_ts: number | null; last_ts: number | null }>(
         `SELECT COUNT(*) AS rows, MIN(bucket_ts) AS first_ts, MAX(bucket_ts) AS last_ts FROM liquidation_buckets`,
       ),
     )[0];
-    return {
+    const value = {
       rows: Number(row?.rows ?? 0),
       firstBucketAt: row?.first_ts ?? null,
       lastBucketAt: row?.last_ts ?? null,
     };
+    this.cachedStorageStats = { expiresAt: now + 15 * 60 * 1000, value };
+    return value;
   }
 
-  private pruneOldRows(): void {
-    this.sql.exec(`DELETE FROM liquidation_buckets WHERE bucket_ts < ?`, Date.now() - RETENTION_MS);
+  private maybePruneOldRows(now = Date.now()): void {
+    if (now - this.lastPrunedAt < PRUNE_INTERVAL_MS) return;
+    this.sql.exec(`DELETE FROM liquidation_buckets WHERE bucket_ts < ?`, now - RETENTION_MS);
+    this.lastPrunedAt = now;
+    this.cachedStorageStats = null;
+  }
+
+  private pruneSummaryRows(now = Date.now()): void {
+    const cutoff = now - 24 * 60 * 60 * 1000 - BUCKET_MS;
+    for (const stored of this.summaryRows.values()) {
+      for (const [key, row] of stored) if (row.bucket_ts < cutoff) stored.delete(key);
+    }
   }
 
   private pruneFingerprints(): void {
@@ -677,6 +735,32 @@ function decodeJson(raw: unknown): unknown {
 
 function liquidationFingerprint(item: Liquidation): string {
   return `${item.exchange}|${item.symbol}|${item.ts}|${item.side}|${item.price}|${item.qty}`;
+}
+
+function summaryRowKey(exchange: string, bucketTs: number): string {
+  return `${exchange}|${bucketTs}`;
+}
+
+function pendingToBucketRow(bucket: PendingBucket): BucketRow {
+  return {
+    exchange: bucket.exchange,
+    symbol: bucket.symbol,
+    bucket_ts: bucket.bucketTs,
+    long_usd: bucket.longUsd,
+    short_usd: bucket.shortUsd,
+    events: bucket.events,
+  };
+}
+
+function normalizeBucketRow(row: BucketRow): BucketRow {
+  return {
+    exchange: row.exchange,
+    symbol: row.symbol,
+    bucket_ts: Number(row.bucket_ts),
+    long_usd: Number(row.long_usd) || 0,
+    short_usd: Number(row.short_usd) || 0,
+    events: Number(row.events) || 0,
+  };
 }
 
 function parseSymbols(value?: string): string[] {

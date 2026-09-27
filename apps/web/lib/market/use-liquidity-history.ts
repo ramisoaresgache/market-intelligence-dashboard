@@ -44,7 +44,7 @@ export function useLiquidityHistory(
     };
     setTimeout(() => setCentral({ key, frames: [] }), 0);
     void load();
-    const timer = window.setInterval(() => void load(), 60_000);
+    const timer = window.setInterval(() => void load(), 5 * 60_000);
     return () => { active = false; window.clearInterval(timer); };
   }, [exchange, key, symbol]);
 
