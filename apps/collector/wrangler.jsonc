@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "market-intelligence-collector",
+  "name": "market-intelligence-dashboard",
   "main": "src/worker.ts",
   "compatibility_date": "2026-09-21",
   "durable_objects": {
