@@ -1,0 +1,40 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "market-intelligence-collector",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-09-21",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "LIQUIDATION_COLLECTOR",
+        "class_name": "LiquidationCollector"
+      },
+      {
+        "name": "ORDERBOOK_COLLECTOR",
+        "class_name": "OrderBookCollector"
+      },
+      {
+        "name": "BINANCE_REGION_PROBE",
+        "class_name": "BinanceRegionProbe"
+      }
+    ]
+  },
+  "exports": {
+    "LiquidationCollector": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    "OrderBookCollector": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    "BinanceRegionProbe": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "vars": {
+    "COLLECTOR_SYMBOLS": "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,BCHUSDT",
+    "CORS_ORIGIN": "*"
+  }
+}

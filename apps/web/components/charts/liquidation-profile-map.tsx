@@ -2,7 +2,7 @@
 
 import * as echarts from "echarts";
 import { useMemo, useState } from "react";
-import { buildLiquidationProfile } from "../../lib/market/engine/liquidation-profile";
+import { buildLiquidationProfile, findKeyLiquidationLevels, type KeyLiquidationLevel } from "../../lib/market/engine/liquidation-profile";
 import { decayedExposure, isLiquidationZoneConsumed, type EstimatedLiquidationZone } from "../../lib/market/engine/estimated-liquidations";
 import type { HistoricalCandle } from "../../lib/market/use-historical-liquidation-map";
 import { InfoTooltip } from "../info-tooltip";
@@ -21,7 +21,10 @@ export function LiquidationProfileMap({ symbol, currentPrice, zones, candles }: 
       <div className="orderbook-heading-controls"><span className="market-chip">{symbol.replace("USDT", "/USDT")}</span><div className="time-range-control">{([4, 12, 24] as const).map((hours) => <button key={hours} type="button" className={rangeHours === hours ? "active" : ""} onClick={() => { setRangeHours(hours); reset(); }}>{hours} h</button>)}</div><div className="chart-toolbar"><button type="button" className="text-control" onClick={reset}>Reset</button><button type="button" className="export-control" onClick={() => exportPng(`${symbol}-liquidation-profile.png`)}>Export PNG</button></div></div>
     </div>
     <div className="chart-legend liquidation-profile-legend"><span><i className="profile-dot long" /> liquidaciones largas estimadas</span><span><i className="profile-dot short" /> liquidaciones cortas estimadas</span><span><i className="profile-line long" /> riesgo largo acumulado</span><span><i className="profile-line short" /> riesgo corto acumulado</span><small>Eje X: precio · Eje Y: intensidad relativa</small></div>
-    <div ref={containerRef} className="echart-surface liquidation-profile-echart" role="img" aria-label={`${symbol} estimated liquidation intensity by price`} />
+    <div className="liquidation-profile-layout">
+      <div ref={containerRef} className="echart-surface liquidation-profile-echart" role="img" aria-label={`${symbol} estimated liquidation intensity by price`} />
+      <KeyLevelsCard symbol={symbol} currentPrice={model?.currentPrice} upper={model?.keyLevels.upper ?? null} lower={model?.keyLevels.lower ?? null} />
+    </div>
     <div className="model-disclaimer"><b>NO ES COINGLASS</b><span>Se usan únicamente datos públicos y el modelo propio del dashboard. Los exchanges no publican la distribución exacta de posiciones por precio; por eso no se inventa un desglose por exchange.</span></div>
   </section>;
 }
@@ -36,7 +39,7 @@ function buildModel(currentPrice: number | null | undefined, zones: EstimatedLiq
   const halfLife = rangeHours * 3_600_000;
   const active = zones.filter((zone) => zone.createdAt >= start && zone.createdAt <= end && Math.abs(zone.liquidationPrice / price - 1) <= 0.14 && !isLiquidationZoneConsumed(zone, relevantCandles)).map((zone) => ({ ...zone, exposure: decayedExposure(zone, end, halfLife) }));
   const profile = buildLiquidationProfile(active, price);
-  return { currentPrice: price, profile };
+  return { currentPrice: price, profile, keyLevels: findKeyLiquidationLevels(profile, price) };
 }
 
 function buildOption(model: Model): echarts.EChartsOption {
@@ -64,3 +67,22 @@ function profileTooltip(params: unknown): string {
 }
 function compactPrice(value: number): string { return new Intl.NumberFormat("en-US", { maximumFractionDigits: value >= 100 ? 0 : 3 }).format(value); }
 function compactMoney(value: number): string { return new Intl.NumberFormat("es-AR", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 2 }).format(value); }
+
+function KeyLevelsCard({ symbol, currentPrice, upper, lower }: { symbol: string; currentPrice?: number; upper: KeyLiquidationLevel | null; lower: KeyLiquidationLevel | null }) {
+  const asset = symbol.replace("USDT", "");
+  return <aside className="key-levels-card" aria-label={`Niveles clave de liquidación estimados para ${asset}`}>
+    <h3>Niveles clave <InfoTooltip label="Niveles clave de liquidación" text="Muestra el bloque modelado con mayor exposición por encima y por debajo del precio actual. Arriba se estiman cierres de cortos y abajo, cierres de largos. Son niveles relativos calculados, no posiciones publicadas por los exchanges." /></h3>
+    <KeyLevelRow level={upper} direction="upper" />
+    <div className="key-current-price"><span>Precio de {asset}</span><b>{currentPrice ? `$${compactPrice(currentPrice)}` : "—"}</b><small>PRECIO ACTUAL</small></div>
+    <KeyLevelRow level={lower} direction="lower" />
+    <p>Exposición estimada del modelo · no equivale a contratos confirmados.</p>
+  </aside>;
+}
+
+function KeyLevelRow({ level, direction }: { level: KeyLiquidationLevel | null; direction: "upper" | "lower" }) {
+  return <div className={`key-level-row ${direction}`}>
+    <i>{direction === "upper" ? "↑" : "↓"}</i>
+    <div><b>{level ? `$${compactPrice(level.price)}` : "Sin nivel activo"}</b><span>{level ? `${level.distancePercent.toFixed(2)}% por ${direction === "upper" ? "encima" : "debajo"} del precio` : "Esperando exposición suficiente"}</span></div>
+    <strong>{level ? compactMoney(level.exposure) : "—"}<small>{direction === "upper" ? "CORTOS" : "LARGOS"}</small></strong>
+  </div>;
+}

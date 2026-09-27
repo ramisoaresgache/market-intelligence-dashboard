@@ -10,7 +10,9 @@ import { useEChart } from "./use-echart";
 import { InfoTooltip } from "../info-tooltip";
 
 const RANGE_OPTIONS = [15, 60, 240] as const;
+const PRICE_MARGIN_OPTIONS = [0.5, 1, 2, 4] as const;
 type RangeMinutes = (typeof RANGE_OPTIONS)[number];
+type PriceMargin = (typeof PRICE_MARGIN_OPTIONS)[number];
 type Props = {
   symbol: string;
   history: LiquidityFrame[];
@@ -28,16 +30,20 @@ const EXCHANGE_OPTIONS: Array<{ value: ExchangeFilter; label: string }> = [
 ];
 
 export function LiquidityHeatmap({ symbol, history, candles, exchange, onExchangeChange }: Props) {
-  const [rangeMinutes, setRangeMinutes] = useState<RangeMinutes>(240);
-  const model = useMemo(() => buildModel(history, candles, rangeMinutes), [history, candles, rangeMinutes]);
+  const [rangeMinutes, setRangeMinutes] = useState<RangeMinutes>(15);
+  const [priceMargin, setPriceMargin] = useState<PriceMargin>(1);
+  const [liquidityThreshold, setLiquidityThreshold] = useState(0.1);
+  const model = useMemo(() => buildModel(history, candles, rangeMinutes, priceMargin, liquidityThreshold), [history, candles, rangeMinutes, priceMargin, liquidityThreshold]);
   const option = useMemo(() => buildOption(model), [model]);
   const { containerRef, reset, exportPng } = useEChart(option);
   return <section className="chart-card heatmap-card" id="liquidity">
     <div className="panel-heading"><div><span className="section-kicker">LIBROS DE ÓRDENES REALES · ECHARTS</span><h2 className="heading-with-help">Mapa de calor de liquidez <InfoTooltip label="Mapa de calor de liquidez" text="Muestra cómo cambia en el tiempo el nocional de órdenes límite visibles. El eje horizontal es tiempo UTC, el vertical es precio y el color representa tamaño relativo. Son órdenes publicadas, no operaciones ejecutadas, y pueden cancelarse." /></h2><p>Histórico de Cloudflare y profundidad en vivo de {exchangeLabel(exchange)} · perpetuos.</p></div>
       <div className="orderbook-heading-controls"><div className="exchange-filter" aria-label="Order book exchange">{EXCHANGE_OPTIONS.map((option) => <button key={option.value} type="button" className={exchange === option.value ? "active" : ""} onClick={() => { onExchangeChange(option.value); reset(); }}>{option.label}</button>)}</div><div className="time-range-control" aria-label="Order book time range">{RANGE_OPTIONS.map((minutes) => <button key={minutes} type="button" className={rangeMinutes === minutes ? "active" : ""} onClick={() => { setRangeMinutes(minutes); reset(); }}>{minutes < 60 ? `${minutes}m` : `${minutes / 60}h`}</button>)}</div>
+        <label className="price-margin-control">MARGEN PRECIO<select aria-label="Margen vertical de precio" value={priceMargin} onChange={(event) => { setPriceMargin(Number(event.target.value) as PriceMargin); reset(); }}>{PRICE_MARGIN_OPTIONS.map((margin) => <option key={margin} value={margin}>±{margin}%</option>)}</select></label>
+        <label className="liquidity-filter-control">LIQUIDEZ<input aria-label="Filtro de intensidad de liquidez" type="range" min="0" max="0.8" step="0.05" value={liquidityThreshold} onChange={(event) => setLiquidityThreshold(Number(event.target.value))} /><b>{Math.round(liquidityThreshold * 100)}%</b></label>
         <div className="chart-toolbar" aria-label="Chart controls"><button type="button" className="text-control" onClick={reset}>Reset</button><button type="button" className="export-control" onClick={() => exportPng(`${symbol}-orderbook.png`)}>Export PNG</button></div></div>
     </div>
-    <div className="chart-legend"><span><i className="legend-gradient" /> liquidez visible: violeta menor · amarillo mayor</span><span><i className="candle-key up" /> velas {symbol.replace("USDT", "/USDT")} · 5 min</span><span><i className="legend-line current-price-key" /> precio medio actual</span><small>{model ? `Cobertura real ${formatDuration(model.coverageMs)} · ` : ""}rueda/pinza: zoom · arrastrar: mover · UTC</small></div>
+    <div className="chart-legend"><span><i className="legend-gradient" /> liquidez visible: violeta menor · amarillo mayor</span><span><i className="candle-key up" /> velas {symbol.replace("USDT", "/USDT")} · 5 min</span><span><i className="legend-line current-price-key" /> precio medio actual</span><small>{model ? `${model.visibleCells.toLocaleString("es-AR")} celdas · cobertura real ${formatDuration(model.coverageMs)} · ` : ""}rueda: tiempo · Shift + rueda o barra derecha: precio</small></div>
     <div className="echarts-orderbook-layout"><div ref={containerRef} className="echart-surface orderbook-echart" role="img" aria-label={`${symbol} interactive order book heatmap`} /><DepthLadder frame={history.at(-1)} /></div>
     <div className="orderbook-chart-note"><b>Cómo leerlo</b><span>La línea celeste punteada es el precio medio actual. Cada celda conserva un snapshot real hasta la siguiente muestra; el suavizado es sólo visual. Amarillo indica mayor nocional relativo, no volumen ejecutado.</span></div>
     <details className="map-explainer orderbook-explainer"><summary>Qué muestra este mapa y cuáles son sus límites</summary><div><p><b>Ejes:</b> el eje X representa tiempo UTC y el eje Y, precio. La intensidad compara la profundidad visible dentro del período seleccionado.</p><p><b>Lectura:</b> concentraciones persistentes pueden funcionar como soporte o resistencia; su aparición o cancelación rápida puede advertir cambios de liquidez, pero no demuestra por sí sola spoofing.</p><p><b>Limitación:</b> sólo vemos órdenes límite públicas de los niveles recibidos. No muestra órdenes ocultas ni garantiza que una pared continúe disponible cuando el precio llegue.</p></div></details>
@@ -50,12 +56,12 @@ function exchangeLabel(exchange: ExchangeFilter): string {
 }
 
 type Model = ReturnType<typeof buildModel>;
-function buildModel(history: LiquidityFrame[], candles: HistoricalCandle[], rangeMinutes: RangeMinutes) {
+function buildModel(history: LiquidityFrame[], candles: HistoricalCandle[], rangeMinutes: RangeMinutes, priceMargin: PriceMargin, liquidityThreshold: number) {
   const latest = history.at(-1); if (!latest) return null;
   const end = latest.ts; const requestedStart = end - rangeMinutes * 60_000;
   const frames = history.filter((frame) => frame.ts >= requestedStart);
-  const start = requestedStart;
   const coverageMs = Math.max(0, end - (frames[0]?.ts ?? end));
+  const start = requestedStart;
   const visibleCandles = candles.filter((candle) => candle.closeTime >= start && candle.openTime <= end);
   const notionals = frames.flatMap((frame) => frame.levels.flatMap((level) => [level.bidNotional, level.askNotional])).filter((value) => value > 0);
   const floor = percentile(notionals, 0.1); const ceiling = Math.max(1, percentile(notionals, 0.95));
@@ -65,17 +71,20 @@ function buildModel(history: LiquidityFrame[], candles: HistoricalCandle[], rang
   const bucketCap = Math.max(liveBucket * 4, latest.mid * 0.00005);
   const gaps = frames.slice(1).map((frame, index) => frame.ts - frames[index].ts).filter((gap) => gap > 0);
   const typicalGap = percentile(gaps, 0.5) || 2_000;
-  const halfColumn = Math.min(60_000, Math.max(1_000, typicalGap * 0.6));
-  const heat = frames.flatMap((frame) => {
+  const heat = frames.flatMap((frame, frameIndex) => {
     const bucket = Math.min(inferBucket(frame.levels), bucketCap);
-    const from = Math.max(start, frame.ts - halfColumn);
-    const to = Math.min(end, frame.ts + halfColumn);
-    return frame.levels.flatMap((level) => { const notional = level.bidNotional + level.askNotional; return notional ? [[from, level.price, to, heatIntensity(notional, floor, ceiling), notional, bucket]] : []; });
+    const from = Math.max(start, frame.ts);
+    const nextFrame = frames[frameIndex + 1];
+    const to = Math.min(end, nextFrame?.ts ?? frame.ts + typicalGap);
+    return frame.levels.flatMap((level) => {
+      const notional = level.bidNotional + level.askNotional;
+      const intensity = heatIntensity(notional, floor, ceiling);
+      return notional && intensity >= liquidityThreshold ? [[from, level.price, Math.max(from + 1_000, to), intensity, notional, bucket]] : [];
+    });
   });
   const candleData = visibleCandles.map((candle) => [candle.openTime, candle.open, candle.close, candle.low, candle.high]);
-  const prices = [...frames.flatMap((frame) => frame.levels.map((level) => level.price)), ...visibleCandles.flatMap((candle) => [candle.low, candle.high]), latest.mid];
-  const rawMin = Math.min(...prices); const rawMax = Math.max(...prices); const padding = Math.max(latest.mid * 0.00025, (rawMax - rawMin) * 0.06);
-  return { start, end, coverageMs, currentPrice: latest.mid, minPrice: rawMin - padding, maxPrice: rawMax + padding, heat, candleData };
+  const margin = latest.mid * (priceMargin / 100);
+  return { start, end, coverageMs, visibleCells: heat.length, currentPrice: latest.mid, minPrice: latest.mid - margin, maxPrice: latest.mid + margin, heat, candleData };
 }
 
 const heatRender: echarts.CustomSeriesRenderItem = (params, api) => {
@@ -102,7 +111,7 @@ function buildOption(model: Model): echarts.EChartsOption {
   return { animation: false, backgroundColor: "#10051e", grid: { left: 20, right: 76, top: 24, bottom: 64 }, tooltip: { trigger: "item", confine: true, backgroundColor: "#080611", borderColor: "#4c3268", textStyle: { color: "#e7e0ef", fontSize: 11 } },
     xAxis: { type: "time", min: model.start, max: model.end, axisLine: { lineStyle: { color: "#4a355d" } }, axisLabel: { color: "#a495b4", formatter: (value: number) => formatUtcTime(value) }, splitLine: { show: true, lineStyle: { color: "#352044" } } },
     yAxis: { type: "value", min: model.minPrice, max: model.maxPrice, scale: true, position: "right", axisLabel: { color: "#b3a7c1" }, axisLine: { show: true, lineStyle: { color: "#4a355d" } }, splitLine: { lineStyle: { color: "#352044" } } },
-    dataZoom: [{ type: "inside", xAxisIndex: 0, filterMode: "none", zoomOnMouseWheel: true, moveOnMouseMove: true, moveOnMouseWheel: false }, { type: "inside", yAxisIndex: 0, filterMode: "none", zoomOnMouseWheel: "shift", moveOnMouseMove: "shift" }, { type: "slider", xAxisIndex: 0, height: 18, bottom: 10, borderColor: "#26364b", backgroundColor: "#0a1320", fillerColor: "rgba(31,214,228,.14)", handleStyle: { color: "#1fd6e4" }, textStyle: { color: "#718198" }, dataBackground: { lineStyle: { color: "#2b7891" }, areaStyle: { color: "#17354b" } } }],
+    dataZoom: [{ type: "inside", xAxisIndex: 0, filterMode: "none", zoomOnMouseWheel: true, moveOnMouseMove: true, moveOnMouseWheel: false }, { type: "inside", yAxisIndex: 0, filterMode: "none", zoomOnMouseWheel: "shift", moveOnMouseMove: "shift" }, { type: "slider", xAxisIndex: 0, height: 18, bottom: 10, borderColor: "#26364b", backgroundColor: "#0a1320", fillerColor: "rgba(31,214,228,.14)", handleStyle: { color: "#1fd6e4" }, textStyle: { color: "#718198" }, dataBackground: { lineStyle: { color: "#2b7891" }, areaStyle: { color: "#17354b" } } }, { type: "slider", yAxisIndex: 0, orient: "vertical", right: 8, top: 35, bottom: 68, width: 11, borderColor: "#4a355d", backgroundColor: "#160925", fillerColor: "rgba(127,211,78,.16)", handleSize: 10, handleStyle: { color: "#b6ec5a", borderColor: "#fff10a" }, showDetail: false }],
     visualMap: { show: false, min: 0, max: 1, dimension: 3, seriesIndex: 0, inRange: { color: ["#25103f", "#303a71", "#178b91", "#7fd34e", "#fff10a"] } },
     series: [{ name: "Nocional visible", type: "custom", coordinateSystem: "cartesian2d", renderItem: heatRender, dimensions: ["from", "price", "to", "intensity", "notional", "bucket"], encode: { x: [0, 2], y: 1, tooltip: [1, 4] }, data: model.heat, z: 1 }, { name: "Velas de precio", type: "custom", coordinateSystem: "cartesian2d", renderItem: candleRender, dimensions: ["time", "open", "close", "low", "high"], encode: { x: 0, y: [1, 2, 3, 4], tooltip: [1, 2, 3, 4] }, data: model.candleData, z: 5 }, { name: "Precio medio actual", type: "line", symbol: "none", data: [[model.start, model.currentPrice], [model.end, model.currentPrice]], lineStyle: { color: "#ff4f78", type: "dashed", width: 1.2 }, tooltip: { show: false }, z: 6 }] };
 }
@@ -113,12 +122,16 @@ function DepthLadder({ frame }: { frame?: LiquidityFrame }) {
 }
 function DepthSide({ label, levels, ceiling, side }: { label: string; levels: Array<{ price: number; notional: number }>; ceiling: number; side: "bid" | "ask" }) { return <section className={`depth-side ${side}`}><strong>{label}</strong>{levels.map((level) => <div key={`${side}-${level.price}`}><i style={{ width: `${Math.max(3, Math.sqrt(level.notional / ceiling) * 100)}%` }} /><span>{formatPrice(level.price)}</span><b>{compactMoney(level.notional)}</b></div>)}</section>; }
 function inferBucket(levels: LiquidityFrame["levels"]): number { const prices = [...new Set(levels.map((level) => level.price))].sort((a, b) => a - b); const differences = prices.slice(1).map((price, index) => price - prices[index]).filter((value) => value > 0); return percentile(differences, 0.5) || 1; }
-function heatIntensity(notional: number, floor: number, ceiling: number): number { if (ceiling <= floor) return notional > 0 ? 1 : 0; return Math.min(1, Math.max(0.04, (Math.log1p(notional) - Math.log1p(floor)) / (Math.log1p(ceiling) - Math.log1p(floor)))); }
+function heatIntensity(notional: number, floor: number, ceiling: number): number {
+  if (ceiling <= floor) return notional > 0 ? 1 : 0;
+  const normalized = (Math.log1p(notional) - Math.log1p(floor)) / (Math.log1p(ceiling) - Math.log1p(floor));
+  return Math.min(1, Math.max(0.02, normalized) ** 1.55);
+}
 function heatColor(intensity: number): string {
-  if (intensity >= 0.82) return "#fff10a";
-  if (intensity >= 0.62) return "#7fd34e";
-  if (intensity >= 0.4) return "#18a89d";
-  if (intensity >= 0.2) return "#36517d";
+  if (intensity >= 0.9) return "#fff10a";
+  if (intensity >= 0.68) return "#9add45";
+  if (intensity >= 0.42) return "#20ad95";
+  if (intensity >= 0.18) return "#365b83";
   return "#31134d";
 }
 function formatPrice(value: number): string { return value >= 1000 ? value.toFixed(1) : value.toFixed(3); }
