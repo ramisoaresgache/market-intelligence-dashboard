@@ -65,7 +65,8 @@ type BucketRow = {
 };
 
 type StorageStats = {
-  rows: number;
+  rows: number | null;
+  rowsExact: boolean;
   firstBucketAt: number | null;
   lastBucketAt: number | null;
 };
@@ -136,7 +137,7 @@ export class LiquidationCollector extends DurableObject<Env> {
   private readonly summaryCoverageStart = new Map<string, number | null>();
   private gateMultiplierLoad: Promise<void> | null = null;
   private flushing = false;
-  private lastPrunedAt = 0;
+  private lastPrunedSlot = Math.floor(Date.now() / PRUNE_INTERVAL_MS);
   private cachedStorageStats: { expiresAt: number; value: StorageStats } | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -609,24 +610,31 @@ export class LiquidationCollector extends DurableObject<Env> {
       return this.cachedStorageStats.value;
     }
 
-    const row = Array.from(
-      this.sql.exec<{ rows: number; first_ts: number | null; last_ts: number | null }>(
-        `SELECT COUNT(*) AS rows, MIN(bucket_ts) AS first_ts, MAX(bucket_ts) AS last_ts FROM liquidation_buckets`,
+    const first = Array.from(
+      this.sql.exec<{ bucket_ts: number }>(
+        `SELECT bucket_ts FROM liquidation_buckets ORDER BY bucket_ts ASC LIMIT 1`,
       ),
-    )[0];
+    )[0]?.bucket_ts;
+    const last = Array.from(
+      this.sql.exec<{ bucket_ts: number }>(
+        `SELECT bucket_ts FROM liquidation_buckets ORDER BY bucket_ts DESC LIMIT 1`,
+      ),
+    )[0]?.bucket_ts;
     const value = {
-      rows: Number(row?.rows ?? 0),
-      firstBucketAt: row?.first_ts ?? null,
-      lastBucketAt: row?.last_ts ?? null,
+      rows: null,
+      rowsExact: false,
+      firstBucketAt: first == null ? null : Number(first),
+      lastBucketAt: last == null ? null : Number(last),
     };
     this.cachedStorageStats = { expiresAt: now + 15 * 60 * 1000, value };
     return value;
   }
 
   private maybePruneOldRows(now = Date.now()): void {
-    if (now - this.lastPrunedAt < PRUNE_INTERVAL_MS) return;
+    const slot = Math.floor(now / PRUNE_INTERVAL_MS);
+    if (slot <= this.lastPrunedSlot) return;
     this.sql.exec(`DELETE FROM liquidation_buckets WHERE bucket_ts < ?`, now - RETENTION_MS);
-    this.lastPrunedAt = now;
+    this.lastPrunedSlot = slot;
     this.cachedStorageStats = null;
   }
 

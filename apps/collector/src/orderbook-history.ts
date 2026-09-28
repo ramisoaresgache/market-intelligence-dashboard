@@ -88,7 +88,8 @@ type HistoryPayload = {
 };
 
 type StorageStats = {
-  rows: number;
+  rows: number | null;
+  rowsExact: boolean;
   firstSnapshotAt: number | null;
   lastSnapshotAt: number | null;
 };
@@ -103,7 +104,7 @@ export class OrderBookCollector extends DurableObject<Env> {
   private metadataPromise: Promise<void> | null = null;
   private collecting = false;
   private lastCollectionAt: number | null = null;
-  private lastPrunedAt = 0;
+  private lastPrunedSlot = Math.floor(Date.now() / PRUNE_INTERVAL_MS);
   private cachedStorageStats: { expiresAt: number; value: StorageStats } | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -121,6 +122,15 @@ export class OrderBookCollector extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     this.ensureFreshCollection();
+
+    if (url.pathname === "/bootstrap") {
+      return Response.json({
+        ok: true,
+        message: "Collector de order book inicializado",
+        symbols: [...this.symbols],
+        centralSources: [...CENTRAL_SOURCES],
+      });
+    }
 
     if (url.pathname === "/v1/orderbook/health") {
       return Response.json({
@@ -173,7 +183,6 @@ export class OrderBookCollector extends DurableObject<Env> {
         PRIMARY KEY (symbol, bucket_ts)
       );
     `);
-    this.sql.exec(`DROP INDEX IF EXISTS idx_orderbook_snapshots_symbol_ts;`);
     this.sql.exec(`
       CREATE INDEX IF NOT EXISTS idx_orderbook_snapshots_ts
       ON orderbook_snapshots(bucket_ts);
@@ -444,25 +453,31 @@ export class OrderBookCollector extends DurableObject<Env> {
       return this.cachedStorageStats.value;
     }
 
-    const row = Array.from(
-      this.sql.exec<{ rows: number; first_ts: number | null; last_ts: number | null }>(
-        `SELECT COUNT(*) AS rows, MIN(bucket_ts) AS first_ts, MAX(bucket_ts) AS last_ts
-         FROM orderbook_snapshots`,
+    const first = Array.from(
+      this.sql.exec<{ bucket_ts: number }>(
+        `SELECT bucket_ts FROM orderbook_snapshots ORDER BY bucket_ts ASC LIMIT 1`,
       ),
-    )[0];
+    )[0]?.bucket_ts;
+    const last = Array.from(
+      this.sql.exec<{ bucket_ts: number }>(
+        `SELECT bucket_ts FROM orderbook_snapshots ORDER BY bucket_ts DESC LIMIT 1`,
+      ),
+    )[0]?.bucket_ts;
     const value = {
-      rows: Number(row?.rows ?? 0),
-      firstSnapshotAt: row?.first_ts ?? null,
-      lastSnapshotAt: row?.last_ts ?? null,
+      rows: null,
+      rowsExact: false,
+      firstSnapshotAt: first == null ? null : Number(first),
+      lastSnapshotAt: last == null ? null : Number(last),
     };
     this.cachedStorageStats = { expiresAt: now + HEALTH_CACHE_MS, value };
     return value;
   }
 
   private maybePruneOldRows(now = Date.now()): void {
-    if (now - this.lastPrunedAt < PRUNE_INTERVAL_MS) return;
+    const slot = Math.floor(now / PRUNE_INTERVAL_MS);
+    if (slot <= this.lastPrunedSlot) return;
     this.sql.exec(`DELETE FROM orderbook_snapshots WHERE bucket_ts < ?`, now - RETENTION_MS);
-    this.lastPrunedAt = now;
+    this.lastPrunedSlot = slot;
     this.cachedStorageStats = null;
   }
 

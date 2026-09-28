@@ -50,7 +50,7 @@ async function bootstrapCollectors(env: Env): Promise<Response> {
 
   const [liquidations, orderbook] = await Promise.all([
     liquidationStub.fetch(new Request("https://collector.internal/bootstrap")),
-    orderbookStub.fetch(new Request("https://collector.internal/v1/orderbook/health")),
+    orderbookStub.fetch(new Request("https://collector.internal/bootstrap")),
   ]);
 
   const liquidationPayload = await safeJson(liquidations);

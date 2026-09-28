@@ -177,7 +177,7 @@ GET /v1/orderbook/history?symbol=BTCUSDT&exchange=all&hours=4
 - fuentes browser-only;
 - último ciclo de recolección;
 - éxitos/fallos por fuente desde el último arranque del objeto;
-- cantidad de filas y primer/último snapshot almacenado.
+- primer/último snapshot almacenado. La cantidad exacta se informa como `null` para que el endpoint de salud no ejecute un `COUNT(*)` completo sobre el histórico.
 
 ---
 
@@ -206,7 +206,7 @@ Las filas dependen de la actividad: sólo hay bucket cuando hubo liquidaciones d
 
 Los `DELETE` también son parte del costo de escritura, por eso se evita persistir snapshots de 5 segundos en Cloudflare.
 
-La limpieza se ejecuta como máximo una vez por hora y ambas tablas tienen un índice por `bucket_ts`, evitando escaneos completos cada minuto. Vercel conserva durante 5 minutos las respuestas del collector para compartir una sola lectura entre visitantes.
+La limpieza se ejecuta como máximo una vez por hora y ambas tablas tienen un índice por `bucket_ts`, evitando escaneos completos cada minuto. La ventana horaria se calcula a partir del reloj, así que un reinicio o desalojo del Durable Object no vuelve a disparar el barrido dentro de la misma hora. Vercel conserva durante 5 minutos las respuestas del collector para compartir una sola lectura entre visitantes.
 
 ---
 
