@@ -18,13 +18,16 @@ La arquitectura vigente es **frontend-first** y está diseñada para funcionar c
 Vercel / Next.js
       │
       ├── Browser Market Engine
-      │     ├── Binance WebSocket
+      │     ├── Binance combined WebSocket (depth + liquidaciones)
       │     ├── Bybit WebSocket
       │     ├── BingX WebSocket (GZIP)
       │     └── Bitunix WebSocket
       │
       └── Web Worker
             └── snapshots UI cada 150 ms
+
+Next.js Route Handler
+      └── histórico OHLC Bybit (fallback OKX) · caché CDN 30 s
 ```
 
 El dashboard consume Binance USD-M, Bybit Linear, BingX Perpetual y Bitunix Futures directamente desde el navegador. No necesita `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_WS_URL` ni FastAPI levantado.
@@ -32,18 +35,22 @@ El dashboard consume Binance USD-M, Bybit Linear, BingX Perpetual y Bitunix Futu
 La interfaz está dividida en vistas para evitar scroll vertical innecesario:
 
 - **Mercado**: heatmap del libro de órdenes con velas reales y mapa estimado de liquidaciones.
+- **Trading**: velas 1m/5m/15m/1h/4h/1D, volumen e indicadores MA, EMA, BOLL, RSI y MACD; histórico REST y vela actual por WebSocket.
 - **Liquidaciones**: totales observados de 1h, 4h, 12h y 24h más el feed en vivo.
 - **Flujos y reservas**: entradas, salidas y saldo agregado de BTC en exchanges; flujos ETF spot si se configura el proveedor.
 - **Noticias**: módulo reservado, todavía sin fuentes sintéticas ni contenido inventado.
 
-Un único `MarketConnectionManager` por pestaña inicia un Web Worker. El worker mantiene las conexiones, valida y normaliza los order books a frecuencia nativa, conserva el estado y publica un snapshot coalescido hacia React cada 150 ms. Cada exchange reconecta de forma independiente con backoff, por lo que una caída parcial no detiene las demás fuentes. El mapa permite elegir `Consolidado`, `Binance`, `Bybit`, `BingX` o `Bitunix`; el filtro se aplica tanto al historial de Cloudflare como al libro en vivo.
+Un único `MarketConnectionManager` por pestaña inicia un Web Worker. El worker mantiene las conexiones, valida y normaliza los order books a frecuencia nativa, conserva el estado y publica un snapshot coalescido hacia React cada 150 ms. Binance agrupa los seis libros y el canal de liquidaciones en un único WebSocket combinado. Cada exchange reconecta de forma independiente con backoff, por lo que una caída parcial no detiene las demás fuentes. El mapa permite elegir `Consolidado`, `Binance`, `Bybit`, `BingX` o `Bitunix`; el filtro se aplica tanto al historial de Cloudflare como al libro en vivo.
+
+La vista Trading usa KLineChart en el navegador. `/api/candles` normaliza el histórico de Bybit Linear y usa OKX Perpetual como fallback; la respuesta aprovecha la caché de Vercel/Next y el navegador conserva hasta 2.000 velas por símbolo/temporalidad en IndexedDB. La vela abierta llega directamente desde el WebSocket público de Bybit. No se usa Durable Objects ni un proceso Python permanente para esta función.
 
 El backend FastAPI permanece en `services/api` sólo como referencia de migración y no fue eliminado en este PR.
 
 ### Fuentes browser-side implementadas
 
-- Binance USD-M: depth incremental + snapshot REST, `!forceOrder@arr` y open interest REST.
-- Bybit Linear: `orderbook.50`, `allLiquidation` y `tickers` (mark/last, open interest y funding).
+- Binance USD-M: un WebSocket combinado para depth incremental de todos los símbolos y `!forceOrder@arr`, más snapshots y open interest REST.
+- Bybit Linear: `orderbook.50`, `allLiquidation`, `tickers` (mark/last, open interest y funding) y velas live de la vista Trading.
+- OKX Perpetual: fallback REST para el histórico OHLC.
 - BingX Perpetual: snapshots públicos `depth100`, descompresión GZIP y heartbeat Ping/Pong.
 - Bitunix Futures: `depth_books` público incremental y heartbeat explícito.
 - Símbolos: BTCUSDT, ETHUSDT, SOLUSDT, BCHUSDT, BNBUSDT y XRPUSDT.

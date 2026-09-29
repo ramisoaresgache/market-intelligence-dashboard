@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { EstimatedLiquidationHeatmap } from "../components/charts/estimated-liquidation-heatmap";
 import { LiquidityHeatmap } from "../components/charts/liquidity-heatmap";
 import { LiquidationProfileMap } from "../components/charts/liquidation-profile-map";
+import { TradingTerminal } from "../components/charts/trading-terminal";
 import { CapitalFlows } from "../components/capital-flows";
 import { ObservedLiquidationSummary } from "../components/observed-liquidation-summary";
 import { MarketPulse } from "../components/market-pulse";
@@ -60,6 +61,7 @@ export default function Dashboard() {
         </button>
         <nav aria-label="Dashboard sections">
           <NavLink view="market" icon="waves" label="Mercado" current={view} onSelect={setView} />
+          <NavLink view="trading" icon="trading" label="Trading" current={view} onSelect={setView} />
           <NavLink view="liquidations" icon="bolt" label="Liquidaciones" current={view} onSelect={setView} />
           <NavLink view="flows" icon="flows" label="Flujos y reservas" current={view} onSelect={setView} />
           <NavLink view="news" icon="news" label="Noticias" current={view} onSelect={setView} />
@@ -143,6 +145,15 @@ export default function Dashboard() {
             />
           </section> : null}
 
+          {view === "trading" ? (
+            <TradingTerminal
+              key={`trading-${activeSymbol}`}
+              symbol={activeSymbol}
+              zones={liquidationZones}
+              liquidations={snapshot?.liquidations ?? []}
+            />
+          ) : null}
+
           {view === "liquidations" ? <section className="liquidations-view section-view">
             <ObservedLiquidationSummary symbol={activeSymbol} liquidations={snapshot?.liquidations ?? []} />
             <div className="lower-grid liquidation-detail-grid">
@@ -185,7 +196,7 @@ function SourcePill({ source }: { source: SourceStatus }) {
   );
 }
 
-type DashboardView = "market" | "liquidations" | "flows" | "news";
+type DashboardView = "market" | "trading" | "liquidations" | "flows" | "news";
 
 function NavLink({ view, icon, label, current, onSelect }: { view: DashboardView; icon: string; label: string; current: DashboardView; onSelect: (view: DashboardView) => void }) {
   return <button type="button" onClick={() => onSelect(view)} className={current === view ? "active" : ""}><span className={`nav-icon ${icon}`} />{label}</button>;

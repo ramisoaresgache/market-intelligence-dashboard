@@ -14,7 +14,7 @@ const OPEN_INTEREST_INTERVAL_MS = 30_000;
 const EXPECTED_FEEDS = MARKET_SYMBOLS.length + 1;
 
 export class BinanceAdapter extends BrowserExchangeAdapter {
-  private readonly sockets = new Set<WebSocket>();
+  private socket: WebSocket | null = null;
   private readonly connectedFeeds = new Set<string>();
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private abortController: AbortController | null = null;
@@ -27,9 +27,8 @@ export class BinanceAdapter extends BrowserExchangeAdapter {
   start(): void {
     if (this.active) return;
     this.active = true;
-    this.status({ connected: false, state: "connecting", detail: "Opening public streams" });
-    for (const symbol of MARKET_SYMBOLS) this.connectDepth(symbol, 0);
-    this.connectLiquidations(0);
+    this.status({ connected: false, state: "connecting", detail: "Opening combined public stream" });
+    this.connectCombined(0);
     void this.pollOpenInterest();
   }
 
@@ -39,54 +38,76 @@ export class BinanceAdapter extends BrowserExchangeAdapter {
     this.pollTimer = null;
     this.abortController?.abort();
     this.abortController = null;
-    for (const socket of this.sockets) socket.close(1000, "worker stopped");
-    this.sockets.clear();
+    this.socket?.close(1000, "worker stopped");
+    this.socket = null;
     this.connectedFeeds.clear();
   }
 
-  private connectDepth(symbol: string, attempt: number): void {
+  private connectCombined(attempt: number): void {
     if (!this.active) return;
-    const feed = `depth:${symbol}`;
-    const socket = new WebSocket(
-      `${WS_BASE}/public/ws/${toBinanceSymbol(symbol)}@depth@100ms`,
-    );
-    const book = new BinanceOrderBook();
-    const pending: BinanceDepthEvent[] = [];
-    let ready = false;
-    let synchronized = false;
-    let snapshotLastUpdateId: number | null = null;
+    const streams = [
+      ...MARKET_SYMBOLS.map((symbol) => `${toBinanceSymbol(symbol)}@depth@100ms`),
+      "!forceOrder@arr",
+    ];
+    const socket = new WebSocket(`${WS_BASE}/stream?streams=${streams.join("/")}`);
+    const depthStates = new Map<string, DepthStreamState>(MARKET_SYMBOLS.map((symbol) => [
+      symbol,
+      {
+        book: new BinanceOrderBook(),
+        pending: [],
+        ready: false,
+        synchronized: false,
+        snapshotLastUpdateId: null,
+      },
+    ]));
     let closedForGap = false;
-    this.sockets.add(socket);
+    this.socket = socket;
 
     socket.onopen = () => {
-      this.markFeed(feed, true);
-      void this.bootstrapDepth(symbol, book, pending).then(
-        (result) => {
-          snapshotLastUpdateId = result.snapshotLastUpdateId;
-          synchronized = result.synchronized;
-          ready = true;
-        },
-        (error: unknown) => {
-          closedForGap = true;
-          this.reportReconnect(error);
-          socket.close(1011, "depth bootstrap failed");
-        },
-      );
+      this.markFeed("liquidations", true);
+      for (const symbol of MARKET_SYMBOLS) {
+        const state = depthStates.get(symbol)!;
+        void this.bootstrapDepth(symbol, state.book, state.pending).then(
+          (result) => {
+            state.snapshotLastUpdateId = result.snapshotLastUpdateId;
+            state.synchronized = result.synchronized;
+            state.ready = true;
+            this.markFeed(`depth:${symbol}`, true);
+          },
+          (error: unknown) => {
+            closedForGap = true;
+            this.reportReconnect(error);
+            socket.close(1011, "depth bootstrap failed");
+          },
+        );
+      }
     };
 
     socket.onmessage = (message) => {
       try {
-        const event = parseBinanceDepth(message.data);
-        if (!ready) {
-          pending.push(event);
+        const payload = parseJsonObject(message.data);
+        const stream = typeof payload.stream === "string" ? payload.stream : "";
+        if (stream === "!forceOrder@arr") {
+          for (const liquidation of parseBinanceLiquidations(payload)) {
+            this.emit({ type: "liquidation", data: liquidation });
+          }
+          this.touch();
           return;
         }
-        if (!synchronized && snapshotLastUpdateId !== null) {
-          event.snapshotLastUpdateId = snapshotLastUpdateId;
+        const symbol = stream.split("@")[0]?.toUpperCase();
+        const state = symbol ? depthStates.get(symbol) : undefined;
+        if (!state) return;
+        const event = parseBinanceDepth(message.data);
+        if (!state.ready) {
+          state.pending.push(event);
+          return;
         }
-        if (book.applyDelta(event)) {
-          synchronized = true;
-          this.emit({ type: "orderbook", data: book.toNormalized(symbol, event.E) });
+        if (!state.synchronized && state.snapshotLastUpdateId !== null) {
+          event.snapshotLastUpdateId = state.snapshotLastUpdateId;
+        }
+        if (state.book.applyDelta(event)) {
+          state.synchronized = true;
+          this.emit({ type: "orderbook", data: state.book.toNormalized(symbol, event.E) });
           this.touch();
         }
       } catch (error) {
@@ -98,9 +119,10 @@ export class BinanceAdapter extends BrowserExchangeAdapter {
 
     socket.onerror = () => socket.close();
     socket.onclose = () => {
-      this.sockets.delete(socket);
-      this.markFeed(feed, false, closedForGap ? "Depth sequence resync" : undefined);
-      this.scheduleReconnect((next) => this.connectDepth(symbol, next), attempt);
+      if (this.socket === socket) this.socket = null;
+      this.connectedFeeds.clear();
+      this.publishStatus(closedForGap ? "Combined stream sequence resync" : "Combined stream reconnecting");
+      this.scheduleReconnect((next) => this.connectCombined(next), attempt);
     };
   }
 
@@ -126,27 +148,6 @@ export class BinanceAdapter extends BrowserExchangeAdapter {
       }
     }
     return { snapshotLastUpdateId: snapshot.lastUpdateId, synchronized };
-  }
-
-  private connectLiquidations(attempt: number): void {
-    if (!this.active) return;
-    const feed = "liquidations";
-    const socket = new WebSocket(`${WS_BASE}/market/ws/!forceOrder@arr`);
-    this.sockets.add(socket);
-
-    socket.onopen = () => this.markFeed(feed, true);
-    socket.onmessage = (message) => {
-      for (const liquidation of parseBinanceLiquidations(message.data)) {
-        this.emit({ type: "liquidation", data: liquidation });
-      }
-      this.touch();
-    };
-    socket.onerror = () => socket.close();
-    socket.onclose = () => {
-      this.sockets.delete(socket);
-      this.markFeed(feed, false);
-      this.scheduleReconnect((next) => this.connectLiquidations(next), attempt);
-    };
   }
 
   private async pollOpenInterest(): Promise<void> {
@@ -188,12 +189,16 @@ export class BinanceAdapter extends BrowserExchangeAdapter {
   private markFeed(feed: string, connected: boolean, detail?: string): void {
     if (connected) this.connectedFeeds.add(feed);
     else this.connectedFeeds.delete(feed);
+    this.publishStatus(detail);
+  }
+
+  private publishStatus(detail?: string): void {
     const allConnected = this.connectedFeeds.size === EXPECTED_FEEDS;
     this.status({
       connected: allConnected,
       state: allConnected ? "live" : this.connectedFeeds.size ? "reconnecting" : "connecting",
-      lastMessageAt: connected ? Date.now() : undefined,
-      detail: detail ?? `${this.connectedFeeds.size}/${EXPECTED_FEEDS} public streams live`,
+      lastMessageAt: this.connectedFeeds.size ? Date.now() : undefined,
+      detail: detail ?? `1 combined socket · ${this.connectedFeeds.size}/${EXPECTED_FEEDS} topics live`,
     });
   }
 
@@ -206,7 +211,7 @@ export class BinanceAdapter extends BrowserExchangeAdapter {
       connected: allConnected,
       state: allConnected ? "live" : "reconnecting",
       lastMessageAt: now,
-      detail: `${this.connectedFeeds.size}/${EXPECTED_FEEDS} public streams live`,
+      detail: `1 combined socket · ${this.connectedFeeds.size}/${EXPECTED_FEEDS} topics live`,
     });
   }
 
@@ -218,6 +223,14 @@ export class BinanceAdapter extends BrowserExchangeAdapter {
       detail: error instanceof Error ? error.message : "Stream interrupted",
     });
   }
+}
+
+interface DepthStreamState {
+  book: BinanceOrderBook;
+  pending: BinanceDepthEvent[];
+  ready: boolean;
+  synchronized: boolean;
+  snapshotLastUpdateId: number | null;
 }
 
 export function parseBinanceDepth(raw: unknown): BinanceDepthEvent {

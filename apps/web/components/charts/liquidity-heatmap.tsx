@@ -102,7 +102,7 @@ const heatRender: echarts.CustomSeriesRenderItem = (params, api) => {
 const candleRender: echarts.CustomSeriesRenderItem = (_params, api) => {
   if (!api.size) return undefined;
   const time = api.value(0) as number; const open = api.value(1) as number; const close = api.value(2) as number; const low = api.value(3) as number; const high = api.value(4) as number;
-  const highPoint = api.coord([time, high]) as number[]; const lowPoint = api.coord([time, low]) as number[]; const openPoint = api.coord([time, open]) as number[]; const closePoint = api.coord([time, close]) as number[]; const color = close >= open ? "#2ee6aa" : "#ff5377"; const candleSize = api.size([15 * 60_000, 0]) as number[]; const width = Math.max(3, Math.min(9, candleSize[0] * 0.55));
+  const highPoint = api.coord([time, high]) as number[]; const lowPoint = api.coord([time, low]) as number[]; const openPoint = api.coord([time, open]) as number[]; const closePoint = api.coord([time, close]) as number[]; const color = close >= open ? "#2ee6aa" : "#ff5377"; const candleSize = api.size([5 * 60_000, 0]) as number[]; const width = Math.max(3, Math.min(9, candleSize[0] * 0.55));
   return { type: "group", children: [{ type: "line", shape: { x1: highPoint[0], y1: highPoint[1], x2: lowPoint[0], y2: lowPoint[1] }, style: { stroke: color, lineWidth: 1.2 } }, { type: "rect", shape: { x: openPoint[0] - width / 2, y: Math.min(openPoint[1], closePoint[1]), width, height: Math.max(2, Math.abs(openPoint[1] - closePoint[1])) }, style: { fill: color } }] };
 };
 

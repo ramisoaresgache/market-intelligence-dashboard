@@ -9,6 +9,10 @@ describe("exchange parsers", () => {
     expect(parseBinanceDepth(JSON.stringify({
       E: 1, U: 10, u: 11, pu: 9, b: [["100", "2"]], a: [],
     }))).toMatchObject({ u: 11, b: [["100", "2"]] });
+    expect(parseBinanceDepth(JSON.stringify({
+      stream: "btcusdt@depth@100ms",
+      data: { E: 2, U: 12, u: 13, pu: 11, b: [], a: [["101", "3"]] },
+    }))).toMatchObject({ u: 13, a: [["101", "3"]] });
 
     const [liquidation] = parseBinanceLiquidations(JSON.stringify({
       E: 4,
@@ -19,6 +23,10 @@ describe("exchange parsers", () => {
       notional: 200,
       sourceQuality: "snapshot",
     });
+    expect(parseBinanceLiquidations({
+      stream: "!forceOrder@arr",
+      data: { E: 6, o: { s: "ETHUSDT", S: "BUY", ap: "10", z: "3", T: 5 } },
+    })[0]).toMatchObject({ symbol: "ETHUSDT", side: "short", notional: 30 });
   });
 
   it("maps Bybit liquidation side and source coverage", () => {
