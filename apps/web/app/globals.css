@@ -301,8 +301,33 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--cyan); outline-
 .trading-actions { margin-left: auto; }
 .trading-actions button:last-child { color: var(--cyan); }
 .trading-chart-layout { display: grid; grid-template-columns: minmax(0, 1fr) 260px; min-height: 720px; }
-.kline-stage { position: relative; min-width: 0; background: #070b12; }
-.kline-chart { width: 100%; height: 720px; }
+.kline-stage { position: relative; display: flex; min-width: 0; background: #070b12; }
+.kline-chart { flex: 1; min-width: 0; height: 720px; }
+.drawing-rail { z-index: 2; width: 49px; flex: 0 0 49px; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 8px 4px; border-right: 1px solid var(--line); background: #080d14; }
+.drawing-rail button { width: 38px; min-height: 37px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; border: 1px solid transparent; border-radius: 5px; color: var(--muted-light); background: transparent; cursor: pointer; font: 18px ui-sans-serif, sans-serif; }
+.drawing-rail button:hover, .drawing-rail button.active { color: var(--cyan); border-color: rgba(31,214,228,.32); background: rgba(31,214,228,.08); }
+.drawing-rail button:disabled { opacity: .38; cursor: not-allowed; }
+.drawing-rail button small { max-width: 36px; overflow: hidden; color: inherit; font: 6px ui-monospace, monospace; white-space: nowrap; text-overflow: ellipsis; }
+.drawing-rail-divider { width: 25px; height: 1px; margin: 3px 0; background: var(--line-strong); }
+.appearance-menu-content select { min-height: 31px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: #080d14; font-size: 10px; }
+.appearance-colors { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; }
+.appearance-colors label, .appearance-check { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted-light); font-size: 10px; }
+.appearance-colors input { width: 45px; height: 30px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.appearance-check input[type="range"] { flex: 1; accent-color: var(--cyan); }
+.appearance-menu-content > button { min-height: 28px; border: 1px solid var(--line); border-radius: 4px; color: var(--cyan); background: #090f18; cursor: pointer; font-size: 9px; }
+.layout-entry { display: flex; gap: 5px; }
+.layout-entry button { min-height: 28px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: #090f18; cursor: pointer; font-size: 10px; }
+.layout-entry button:first-child { flex: 1; display: flex; justify-content: space-between; text-align: left; }
+.layout-entry button:last-child { color: var(--red); }
+.layout-entry small, .trading-chart-status kbd, .trading-actions kbd { color: var(--muted); font: 8px ui-monospace, monospace; }
+.trading-chart-status { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 7px; padding: 7px 12px; border-top: 1px solid var(--line); color: var(--muted-light); background: #080d14; font: 8px ui-monospace, monospace; }
+.selected-drawing-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--line); background: #101b27; }
+.selected-drawing-bar strong { color: var(--cyan); font: 10px ui-monospace, monospace; }
+.selected-drawing-bar label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted-light); font-size: 9px; }
+.selected-drawing-bar input[type="color"] { width: 30px; height: 25px; border: 0; background: transparent; cursor: pointer; }
+.selected-drawing-bar input[type="range"] { width: 85px; accent-color: var(--cyan); }
+.selected-drawing-bar button { min-height: 26px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: #0a121c; cursor: pointer; font-size: 9px; }
+.selected-drawing-bar button:last-child { color: var(--red); }
 .kline-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 9px; color: var(--muted); font-size: 10px; background: #070b12; }
 .trading-levels { display: flex; min-width: 0; flex-direction: column; border-left: 1px solid var(--line-strong); background: #080d14; }
 .trading-levels > header { min-height: 49px; display: flex; align-items: center; justify-content: space-between; padding: 0 13px; border-bottom: 1px solid var(--line); }
@@ -377,7 +402,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--cyan); outline-
   .event-row { grid-template-columns: 48px 41px 60px 1fr; }.event-row small { display: none; }
   .app-footer { gap: 10px; flex-direction: column; line-height: 1.5; }
   .news-intelligence-head, .calendar-toolbar { align-items: flex-start; flex-direction: column; }.calendar-toolbar nav { width: 100%; overflow-x: auto; }.news-layout { padding: 8px; }.news-intelligence-head h2 { font-size: 16px; }
-  .trading-terminal-head { align-items: flex-start; flex-direction: column; }.trading-live-summary { text-align: left; }.trading-toolbar { align-items: flex-start; flex-direction: column; }.timeframe-selector, .indicator-selector { width: 100%; overflow-x: auto; }.trading-actions { margin-left: 0; }.kline-chart { height: 610px; }.trading-chart-layout { min-height: 610px; }
+  .trading-terminal-head { align-items: flex-start; flex-direction: column; }.trading-live-summary { text-align: left; }.trading-toolbar { align-items: flex-start; flex-direction: column; }.timeframe-selector, .indicator-selector { width: 100%; overflow-x: auto; }.trading-actions { margin-left: 0; }.kline-stage { flex-direction: column; }.drawing-rail { width: 100%; flex: none; height: 48px; flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }.drawing-rail button { flex: 0 0 38px; }.drawing-rail-divider { width: 1px; height: 25px; margin: 0 3px; }.kline-chart { flex: none; width: 100%; height: 610px; }.trading-chart-layout { min-height: 610px; }
 }
 
 @media (max-width: 1180px) { .capital-flow-grid, .observed-window-grid { grid-template-columns: repeat(2, 1fr); } }

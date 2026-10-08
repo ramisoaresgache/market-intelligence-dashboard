@@ -3,7 +3,7 @@ import type { KLineData, Period } from "klinecharts";
 export const TRADING_INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"] as const;
 
 export type TradingInterval = (typeof TRADING_INTERVALS)[number];
-export type CandleSource = "bybit" | "okx";
+export type CandleSource = "bingx" | "bybit" | "okx";
 export type TradingCandle = KLineData;
 
 const BYBIT_INTERVALS: Record<TradingInterval, string> = {
@@ -51,6 +51,29 @@ export function toKLinePeriod(interval: TradingInterval): Period {
 
 export function toOkxInstrument(symbol: string): string {
   return `${symbol.replace(/USDT$/i, "")}-USDT-SWAP`;
+}
+
+export function toBingxInstrument(symbol: string): string {
+  return `${symbol.replace(/USDT$/i, "")}-USDT`;
+}
+
+export function parseBingxKlines(rows: unknown): TradingCandle[] {
+  if (!Array.isArray(rows)) return [];
+  return rows.flatMap((row) => {
+    if (Array.isArray(row)) {
+      const candle = toCandle(row[0], row[1], row[2], row[3], row[4], row[5], row[7]);
+      return candle ? [candle] : [];
+    }
+    if (!isRecord(row)) return [];
+    const candle = toCandle(row.time ?? row.t, row.open ?? row.o, row.high ?? row.h, row.low ?? row.l, row.close ?? row.c, row.volume ?? row.v, row.quoteVolume ?? row.q);
+    return candle ? [candle] : [];
+  }).sort((left, right) => left.timestamp - right.timestamp);
+}
+
+export function parseBingxLiveCandle(value: unknown): TradingCandle | null {
+  if (!isRecord(value)) return null;
+  const data = isRecord(value.K) ? value.K : value;
+  return toCandle(data.t ?? data.T ?? data.time, data.o ?? data.open, data.h ?? data.high, data.l ?? data.low, data.c ?? data.close, data.v ?? data.volume, data.q ?? data.quoteVolume);
 }
 
 export function parseBybitKlines(rows: unknown): TradingCandle[] {

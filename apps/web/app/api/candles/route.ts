@@ -2,9 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { normalizeSymbol } from "../../../lib/market/symbols";
 import {
   isTradingInterval,
+  parseBingxKlines,
   parseBybitKlines,
   parseOkxKlines,
   toBybitInterval,
+  toBingxInstrument,
   toOkxInstrument,
   toOkxInterval,
   type CandleSource,
@@ -15,6 +17,7 @@ import {
 export const dynamic = "force-dynamic";
 
 const BYBIT_REST = "https://api.bybit.com/v5/market/kline";
+const BINGX_REST = "https://open-api.bingx.com/openApi/swap/v3/quote/klines";
 const OKX_REST = "https://www.okx.com/api/v5/market/candles";
 
 export async function GET(request: NextRequest) {
@@ -27,20 +30,22 @@ export async function GET(request: NextRequest) {
     const interval = rawInterval;
     const limit = clamp(Number(request.nextUrl.searchParams.get("limit") ?? 1000), 50, 1000);
     const requestedSource = request.nextUrl.searchParams.get("source") ?? "auto";
-    if (!["auto", "bybit", "okx"].includes(requestedSource)) {
+    if (!["auto", "bingx", "bybit", "okx"].includes(requestedSource)) {
       return NextResponse.json({ error: "Fuente no soportada" }, { status: 400 });
     }
 
     const order: CandleSource[] = requestedSource === "auto"
-      ? ["bybit", "okx"]
+      ? ["bingx", "bybit", "okx"]
       : [requestedSource as CandleSource];
     const warnings: string[] = [];
 
     for (const source of order) {
       try {
-        const candles = source === "bybit"
-          ? await fetchBybit(symbol, interval, limit)
-          : await fetchOkx(symbol, interval, Math.min(limit, 300));
+        const candles = source === "bingx"
+          ? await fetchBingx(symbol, interval, limit)
+          : source === "bybit"
+            ? await fetchBybit(symbol, interval, limit)
+            : await fetchOkx(symbol, interval, Math.min(limit, 300));
         if (!candles.length) throw new Error(`${source} no devolvió velas`);
         return NextResponse.json(
           { symbol, interval, source, generatedAt: Date.now(), candles, warnings },
@@ -58,6 +63,18 @@ export async function GET(request: NextRequest) {
       { status: 400 },
     );
   }
+}
+
+async function fetchBingx(symbol: string, interval: TradingInterval, limit: number) {
+  const url = new URL(BINGX_REST);
+  url.searchParams.set("symbol", toBingxInstrument(symbol));
+  url.searchParams.set("interval", interval);
+  url.searchParams.set("limit", String(limit));
+  const response = await fetch(url, { next: { revalidate: 30 } });
+  if (!response.ok) throw new Error(`BingX HTTP ${response.status}`);
+  const payload = await response.json() as { code?: number | string; msg?: string; data?: unknown };
+  if (payload.code != null && Number(payload.code) !== 0) throw new Error(`BingX: ${payload.msg ?? payload.code}`);
+  return parseBingxKlines(payload.data);
 }
 
 async function fetchBybit(symbol: string, interval: TradingInterval, limit: number) {
