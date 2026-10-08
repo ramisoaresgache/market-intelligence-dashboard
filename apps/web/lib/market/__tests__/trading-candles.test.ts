@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  candleSeriesKey,
   mergeCandles,
   parseBingxKlines,
   parseBingxLiveCandle,
@@ -14,6 +15,10 @@ import {
 } from "../trading-candles";
 
 describe("trading candles", () => {
+  it("uses the same versioned key for the active view and cached series", () => {
+    expect(candleSeriesKey("BTCUSDT", "5m")).toBe("bingx-primary:BTCUSDT:5m");
+    expect(candleSeriesKey("BTCUSDT", "1h")).not.toBe(candleSeriesKey("BTCUSDT", "5m"));
+  });
   it("normalizes and orders Bybit klines", () => {
     expect(parseBybitKlines([
       ["2000", "11", "13", "10", "12", "5", "60"],

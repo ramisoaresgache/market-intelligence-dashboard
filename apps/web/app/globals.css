@@ -329,6 +329,10 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--cyan); outline-
 .selected-drawing-bar button { min-height: 26px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: #0a121c; cursor: pointer; font-size: 9px; }
 .selected-drawing-bar button:last-child { color: var(--red); }
 .kline-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 9px; color: var(--muted); font-size: 10px; background: #070b12; }
+.kline-load-error { max-width: 390px; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 20px; text-align: center; }
+.kline-load-error strong { color: var(--text-strong); font-size: 14px; }
+.kline-load-error small { color: var(--muted); line-height: 1.5; }
+.kline-load-error button { min-height: 30px; padding: 0 12px; border: 1px solid var(--cyan); border-radius: 5px; color: var(--cyan); background: rgba(31,214,228,.1); cursor: pointer; }
 .trading-levels { display: flex; min-width: 0; flex-direction: column; border-left: 1px solid var(--line-strong); background: #080d14; }
 .trading-levels > header { min-height: 49px; display: flex; align-items: center; justify-content: space-between; padding: 0 13px; border-bottom: 1px solid var(--line); }
 .trading-levels > header span { color: var(--muted-light); font-size: 8px; letter-spacing: .1em; }

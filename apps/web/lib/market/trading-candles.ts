@@ -6,6 +6,10 @@ export type TradingInterval = (typeof TRADING_INTERVALS)[number];
 export type CandleSource = "bingx" | "bybit" | "okx";
 export type TradingCandle = KLineData;
 
+export function candleSeriesKey(symbol: string, interval: TradingInterval): string {
+  return `bingx-primary:${symbol}:${interval}`;
+}
+
 const BYBIT_INTERVALS: Record<TradingInterval, string> = {
   "1m": "1",
   "5m": "5",

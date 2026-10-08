@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import {
+  candleSeriesKey,
   mergeCandles,
   parseBingxLiveCandle,
   parseBybitLiveCandle,
@@ -41,7 +42,7 @@ export function useTradingCandles(
   const [state, setState] = useState<TradingFeedState>("loading");
   const [historySource, setHistorySource] = useState<CandleSource | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const activeKey = `${symbol}:${interval}`;
+  const activeKey = candleSeriesKey(symbol, interval);
   const [loadedKey, setLoadedKey] = useState(activeKey);
 
   useEffect(() => {
@@ -50,13 +51,13 @@ export function useTradingCandles(
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let heartbeat: ReturnType<typeof setInterval> | null = null;
     let series: TradingCandle[] = [];
-    const cacheKey = `bingx-primary:${symbol}:${interval}`;
+    const cacheKey = activeKey;
 
     void loadHistory();
 
     async function loadHistory() {
       try {
-        const cached = await readCachedCandles(cacheKey);
+        const cached = await readCachedCandles(cacheKey).catch(() => [] as TradingCandle[]);
         if (!cancelled && cached.length) {
           commitCandles(cached);
           setHistorySource(null);
@@ -170,7 +171,7 @@ export function useTradingCandles(
       if (heartbeat) clearInterval(heartbeat);
       if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, "view changed");
     };
-  }, [interval, symbol]);
+  }, [activeKey, interval, symbol]);
 
   if (loadedKey !== activeKey) {
     return { candles: [], state: "loading", historySource: null, error: null };

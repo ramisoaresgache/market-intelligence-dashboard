@@ -581,7 +581,7 @@ export function TradingTerminal({ symbol, zones, liquidations }: TradingTerminal
             <button type="button" title="Eliminar todos los dibujos" aria-label="Eliminar todos los dibujos" disabled={!drawingCount} onClick={clearDrawings}>♲</button>
           </nav>
           <div ref={containerRef} className="kline-chart" aria-label={`Gráfico de velas ${symbol} ${interval}`} />
-          {!feed.candles.length ? <div className="kline-loading"><span className="pulse-dot" />Cargando velas…</div> : null}
+          {!feed.candles.length ? <div className="kline-loading">{feed.state === "error" ? <div className="kline-load-error"><strong>No se pudieron cargar las velas</strong><small>{feed.error ?? "La fuente no respondió."}</small><button type="button" onClick={() => window.location.reload()}>Reintentar</button></div> : <><span className="pulse-dot" />Cargando velas…</>}</div> : null}
         </div>
         <aside className="trading-levels">
           <header><span>NIVELES EN EL GRÁFICO</span><b>{visibleZones.length + visibleEvents.length}</b></header>
