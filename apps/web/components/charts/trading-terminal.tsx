@@ -10,9 +10,14 @@ import {
 } from "../../lib/market/trading-candles";
 import type { LiquidationEvent } from "../../lib/market/types";
 import { useTradingCandles } from "../../lib/market/use-trading-candles";
+import { TradingPriceAlerts } from "./trading-price-alerts";
 
-const OVERLAY_INDICATORS = ["MA", "EMA", "BOLL"] as const;
-const PANE_INDICATORS = ["VOL", "RSI", "MACD"] as const;
+const OVERLAY_INDICATORS = ["MA", "EMA", "SMA", "BOLL", "SAR", "AVP"] as const;
+const PANE_INDICATORS = ["VOL", "RSI", "MACD", "KDJ", "CCI", "OBV", "WR"] as const;
+const PARAMETER_DEFAULTS: Record<string, number[]> = {
+  MA: [5, 10, 30, 60], EMA: [6, 12, 20], SMA: [12, 2], BOLL: [20, 2], SAR: [2, 2, 20],
+  VOL: [5, 10, 20], RSI: [6, 12, 24], MACD: [12, 26, 9], KDJ: [9, 3, 3], CCI: [20], WR: [14, 6],
+};
 
 interface TradingTerminalProps {
   symbol: string;
@@ -24,6 +29,11 @@ export function TradingTerminal({ symbol, zones, liquidations }: TradingTerminal
   const [interval, setInterval] = useState<TradingInterval>("5m");
   const [overlayIndicators, setOverlayIndicators] = useState<string[]>(["MA"]);
   const [paneIndicators, setPaneIndicators] = useState<string[]>(["VOL", "RSI", "MACD"]);
+  const [indicatorParams, setIndicatorParams] = useState<Record<string, number[]>>({});
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [selectedIndicator, setSelectedIndicator] = useState("MA");
+  const [parameterDraft, setParameterDraft] = useState("5, 10, 30, 60");
+  const [parameterError, setParameterError] = useState("");
   const [chartReady, setChartReady] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
@@ -32,6 +42,26 @@ export function TradingTerminal({ symbol, zones, liquidations }: TradingTerminal
   const feed = useTradingCandles(symbol, interval);
   const hasCandles = feed.candles.length > 0;
   const latestTimestamp = feed.candles.at(-1)?.timestamp;
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        const saved = JSON.parse(localStorage.getItem("mi-indicators-v1") ?? "null") as { overlay?: string[]; panes?: string[]; params?: Record<string, number[]> } | null;
+        if (saved) {
+          if (Array.isArray(saved.overlay)) setOverlayIndicators(saved.overlay.filter((name) => OVERLAY_INDICATORS.some((item) => item === name)));
+          if (Array.isArray(saved.panes)) setPaneIndicators(saved.panes.filter((name) => PANE_INDICATORS.some((item) => item === name)));
+          if (saved.params && typeof saved.params === "object") setIndicatorParams(Object.fromEntries(Object.entries(saved.params).filter(([name, values]) => Array.isArray(values) && PARAMETER_DEFAULTS[name]?.length === values.length && values.every((value) => typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 200))));
+        }
+      } catch { /* Invalid local preference: use defaults. */ }
+      setSettingsLoaded(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    localStorage.setItem("mi-indicators-v1", JSON.stringify({ overlay: overlayIndicators, panes: paneIndicators, params: indicatorParams }));
+  }, [indicatorParams, overlayIndicators, paneIndicators, settingsLoaded]);
 
   useEffect(() => {
     candlesRef.current = feed.candles;
@@ -123,9 +153,9 @@ export function TradingTerminal({ symbol, zones, liquidations }: TradingTerminal
       });
       chart.setPeriod(toKLinePeriod(interval));
       for (const name of overlayIndicators) {
-        chart.createIndicator({ name, paneId: "candle_pane" }, true);
+        chart.createIndicator({ name, paneId: "candle_pane", ...(indicatorParams[name] ? { calcParams: indicatorParams[name] } : {}) }, true);
       }
-      for (const name of paneIndicators) chart.createIndicator(name);
+      for (const name of paneIndicators) chart.createIndicator({ name, ...(indicatorParams[name] ? { calcParams: indicatorParams[name] } : {}) });
       chart.setOffsetRightDistance(70);
       chart.scrollToRealTime();
       setChartReady((current) => current + 1);
@@ -146,7 +176,7 @@ export function TradingTerminal({ symbol, zones, liquidations }: TradingTerminal
       }
       if (chartRef.current === localChart) chartRef.current = null;
     };
-  }, [hasCandles, interval, overlayIndicators, paneIndicators, symbol]);
+  }, [hasCandles, indicatorParams, interval, overlayIndicators, paneIndicators, symbol]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -214,6 +244,23 @@ export function TradingTerminal({ symbol, zones, liquidations }: TradingTerminal
       : [...current, name]);
   }
 
+  function selectIndicator(name: string) {
+    setSelectedIndicator(name);
+    setParameterDraft((indicatorParams[name] ?? PARAMETER_DEFAULTS[name] ?? []).join(", "));
+    setParameterError("");
+  }
+
+  function saveParameters() {
+    const values = parameterDraft.split(",").map((value) => Number(value.trim()));
+    const defaults = PARAMETER_DEFAULTS[selectedIndicator];
+    if (!defaults || values.length !== defaults.length || values.some((value) => !Number.isFinite(value) || value <= 0 || value > 200)) {
+      setParameterError(`Ingresá ${defaults?.length ?? 0} números entre 1 y 200, separados por comas.`);
+      return;
+    }
+    setIndicatorParams((current) => ({ ...current, [selectedIndicator]: values }));
+    setParameterError("");
+  }
+
   function exportChart() {
     const url = chartRef.current?.getConvertPictureUrl(true, "png", "#070b12");
     if (!url) return;
@@ -251,15 +298,14 @@ export function TradingTerminal({ symbol, zones, liquidations }: TradingTerminal
             </button>
           ))}
         </div>
-        <div className="indicator-selector" aria-label="Indicadores de precio">
-          {OVERLAY_INDICATORS.map((name) => (
-            <button key={name} type="button" className={overlayIndicators.includes(name) ? "active" : ""} onClick={() => toggleOverlay(name)}>{name}</button>
-          ))}
-          <span />
-          {PANE_INDICATORS.map((name) => (
-            <button key={name} type="button" className={paneIndicators.includes(name) ? "active" : ""} onClick={() => togglePane(name)}>{name}</button>
-          ))}
-        </div>
+        <details className="indicator-menu"><summary>Indicadores ({overlayIndicators.length + paneIndicators.length})</summary>
+          <div className="indicator-menu-content">
+            <strong>Sobre el precio</strong><div className="indicator-menu-grid">{OVERLAY_INDICATORS.map((name) => <button key={name} type="button" className={overlayIndicators.includes(name) ? "active" : ""} onClick={() => toggleOverlay(name)}>{name}</button>)}</div>
+            <strong>Paneles</strong><div className="indicator-menu-grid">{PANE_INDICATORS.map((name) => <button key={name} type="button" className={paneIndicators.includes(name) ? "active" : ""} onClick={() => togglePane(name)}>{name}</button>)}</div>
+            <strong>Parámetros</strong><div className="indicator-parameters"><select aria-label="Indicador a configurar" value={selectedIndicator} onChange={(event) => selectIndicator(event.target.value)}>{Object.keys(PARAMETER_DEFAULTS).map((name) => <option key={name}>{name}</option>)}</select><input aria-label="Períodos del indicador" value={parameterDraft} onChange={(event) => setParameterDraft(event.target.value)} placeholder="5, 10, 30, 60" /><button type="button" onClick={saveParameters}>Aplicar</button></div>
+            {parameterError ? <small className="indicator-error">{parameterError}</small> : <small className="indicator-note">Los indicadores y períodos quedan guardados en este navegador. Tus scripts Pine se podrán portar cuando compartas sus fórmulas.</small>}
+          </div>
+        </details>
         <div className="trading-actions">
           <button type="button" onClick={() => chartRef.current?.scrollToRealTime(300)}>Ahora</button>
           <button type="button" onClick={exportChart}>PNG</button>
@@ -273,12 +319,12 @@ export function TradingTerminal({ symbol, zones, liquidations }: TradingTerminal
         </div>
         <aside className="trading-levels">
           <header><span>NIVELES EN EL GRÁFICO</span><b>{visibleZones.length + visibleEvents.length}</b></header>
-          <div className="level-legend"><i className="long" />Long estimado<i className="short" />Short estimado</div>
+          <div className="level-legend"><i className="long" />Cierre long estimado<i className="short" />Cierre short estimado</div>
           <div className="trading-level-list">
             {visibleZones.map((zone) => (
               <div key={zone.id}>
                 <i className={zone.side} />
-                <p><b>${formatPrice(zone.liquidationPrice)}</b><small>{zone.side} · {zone.leverage}x · {zone.confidence}</small></p>
+                <p><b>${formatPrice(zone.liquidationPrice)}</b><small>Cierre {zone.side} · escenario {zone.leverage}x · confianza {zone.confidence === "medium" ? "media" : "baja"}</small></p>
                 <em>{compactMoney(zone.exposure)}</em>
               </div>
             ))}
@@ -291,6 +337,7 @@ export function TradingTerminal({ symbol, zones, liquidations }: TradingTerminal
           {feed.error ? <p className="trading-warning">{feed.error}</p> : null}
         </aside>
       </div>
+      <TradingPriceAlerts key={`${symbol}-${interval}`} symbol={symbol} price={last?.close} live={feed.state === "live"} />
       <p className="trading-disclaimer">Las líneas de liquidación son estimaciones analíticas, no posiciones reportadas por los exchanges. Los marcadores L/S sí representan eventos observados en los feeds públicos disponibles.</p>
     </section>
   );

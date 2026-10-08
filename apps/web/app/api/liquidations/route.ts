@@ -20,14 +20,14 @@ export async function GET(request: Request) {
   try {
     const upstream = await fetch(
       `${baseUrl}/v1/liquidations/summary?symbol=${encodeURIComponent(symbol)}`,
-      { next: { revalidate: 300 } },
+      { next: { revalidate: 60 } },
     );
     const payload = await upstream.json();
     if (!upstream.ok) {
       return NextResponse.json(payload, { status: upstream.status });
     }
     return NextResponse.json(payload, {
-      headers: { "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600" },
+      headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=120" },
     });
   } catch (error) {
     return NextResponse.json(

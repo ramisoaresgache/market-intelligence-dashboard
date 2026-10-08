@@ -34,13 +34,13 @@ El dashboard consume Binance USD-M, Bybit Linear, BingX Perpetual y Bitunix Futu
 
 La interfaz está dividida en vistas para evitar scroll vertical innecesario:
 
-- **Mercado**: heatmap del libro de órdenes con velas reales y mapa estimado de liquidaciones.
-- **Trading**: velas 1m/5m/15m/1h/4h/1D, volumen e indicadores MA, EMA, BOLL, RSI y MACD; histórico REST y vela actual por WebSocket.
-- **Liquidaciones**: totales observados de 1h, 4h, 12h y 24h más el feed en vivo.
+- **Mercado**: libro de órdenes legible por exchange, perfil de liquidaciones estimadas y mapa estimado de riesgo. El heatmap histórico del libro se retiró de la interfaz por su baja legibilidad.
+- **Trading**: velas 1m/5m/15m/1h/4h/1D, catálogo de indicadores configurables y alertas de cruce de precio; histórico REST y vela actual por WebSocket. Los indicadores y alertas se guardan localmente en el navegador; las alertas se evalúan mientras la pestaña está abierta.
+- **Liquidaciones**: totales observados de 1h, 4h, 12h y 24h separados por Bybit, Gate.io y BitMEX en Cloudflare; Binance parcial durante la sesión del navegador.
 - **Flujos y reservas**: entradas, salidas y saldo agregado de BTC en exchanges; flujos ETF spot si se configura el proveedor.
 - **Noticias**: módulo reservado, todavía sin fuentes sintéticas ni contenido inventado.
 
-Un único `MarketConnectionManager` por pestaña inicia un Web Worker. El worker mantiene las conexiones, valida y normaliza los order books a frecuencia nativa, conserva el estado y publica un snapshot coalescido hacia React cada 150 ms. Binance agrupa los seis libros y el canal de liquidaciones en un único WebSocket combinado. Cada exchange reconecta de forma independiente con backoff, por lo que una caída parcial no detiene las demás fuentes. El mapa permite elegir `Consolidado`, `Binance`, `Bybit`, `BingX` o `Bitunix`; el filtro se aplica tanto al historial de Cloudflare como al libro en vivo.
+Un único `MarketConnectionManager` por pestaña inicia un Web Worker. El worker mantiene las conexiones, valida y normaliza los order books a frecuencia nativa, conserva el estado y publica un snapshot coalescido hacia React cada 150 ms. Binance agrupa los seis libros y el canal de liquidaciones en un único WebSocket combinado. Cada exchange reconecta de forma independiente con backoff, por lo que una caída parcial no detiene las demás fuentes. El libro permite elegir los cuatro exchanges en vivo o una captura agregada de OKX desde Cloudflare cada minuto.
 
 La vista Trading usa KLineChart en el navegador. `/api/candles` normaliza el histórico de Bybit Linear y usa OKX Perpetual como fallback; la respuesta aprovecha la caché de Vercel/Next y el navegador conserva hasta 2.000 velas por símbolo/temporalidad en IndexedDB. La vela abierta llega directamente desde el WebSocket público de Bybit. No se usa Durable Objects ni un proceso Python permanente para esta función.
 
@@ -50,19 +50,19 @@ El backend FastAPI permanece en `services/api` sólo como referencia de migraci�
 
 - Binance USD-M: un WebSocket combinado para depth incremental de todos los símbolos y `!forceOrder@arr`, más snapshots y open interest REST.
 - Bybit Linear: `orderbook.50`, `allLiquidation`, `tickers` (mark/last, open interest y funding) y velas live de la vista Trading.
-- OKX Perpetual: fallback REST para el histórico OHLC.
+- OKX Perpetual: fallback REST para el histórico OHLC; snapshots agrupados del libro de órdenes desde Cloudflare cada minuto.
 - BingX Perpetual: snapshots públicos `depth100`, descompresión GZIP y heartbeat Ping/Pong.
 - Bitunix Futures: `depth_books` público incremental y heartbeat explícito.
 - Símbolos: BTCUSDT, ETHUSDT, SOLUSDT, BCHUSDT, BNBUSDT y XRPUSDT.
 
-Las liquidaciones de Binance se etiquetan como cobertura parcial (`snapshot`). Las de Bybit se etiquetan como cobertura completa declarada por la fuente (`all`). BingX y Bitunix aportan libro de órdenes, pero no se presentan como fuentes de liquidaciones observadas porque su documentación pública actual no ofrece un canal equivalente.
+Las liquidaciones de Binance se etiquetan como cobertura parcial (`snapshot`). Las de Bybit se etiquetan como cobertura completa declarada por la fuente (`all`). El collector de Cloudflare acumula también liquidaciones de Gate.io y BitMEX por exchange. BingX, Bitunix y OKX aportan libros o velas, pero no se presentan como fuentes de liquidaciones observadas en este producto.
 
 ## Módulos objetivo
 
 - BTC / ETH / SOL live
 - Order Book por exchange y agregado
 - Observed Liquidations
-- Liquidity Heatmap
+- Libro de órdenes por exchange
 - Estimated Liquidation Heatmap propio
 - Open Interest
 - Funding
@@ -75,7 +75,7 @@ Las liquidaciones de Binance se etiquetan como cobertura parcial (`snapshot`). L
 
 No confundir:
 
-- **Liquidity Heatmap**: órdenes limit visibles reales.
+- **Libro de órdenes**: órdenes límite visibles reales; OKX se muestra como captura agregada diferida.
 - **Observed Liquidations**: liquidaciones reportadas por exchanges.
 - **Estimated Liquidation Heatmap**: modelo propio de zonas potenciales, no dato exacto.
 

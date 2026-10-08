@@ -1,7 +1,7 @@
 export const MARKET_EXCHANGES = ["binance", "bybit", "bingx", "bitunix"] as const;
 
 export type Exchange = (typeof MARKET_EXCHANGES)[number];
-export type ExchangeFilter = "all" | Exchange;
+export type ExchangeFilter = "all" | Exchange | "okx";
 
 export type ConnectionState = "connecting" | "live" | "reconnecting" | "unavailable";
 

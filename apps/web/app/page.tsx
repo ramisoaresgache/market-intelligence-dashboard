@@ -2,11 +2,11 @@
 
 import { useMemo, useState } from "react";
 import { EstimatedLiquidationHeatmap } from "../components/charts/estimated-liquidation-heatmap";
-import { LiquidityHeatmap } from "../components/charts/liquidity-heatmap";
+import { OrderBookDepth } from "../components/charts/orderbook-depth";
 import { LiquidationProfileMap } from "../components/charts/liquidation-profile-map";
 import { TradingTerminal } from "../components/charts/trading-terminal";
 import { CapitalFlows } from "../components/capital-flows";
-import { ObservedLiquidationSummary } from "../components/observed-liquidation-summary";
+import { ObservedLiquidationSummary, type LiquidationSource } from "../components/observed-liquidation-summary";
 import { MarketPulse } from "../components/market-pulse";
 import { FearGreedCard } from "../components/fear-greed-card";
 import { InfoTooltip } from "../components/info-tooltip";
@@ -36,6 +36,7 @@ export default function Dashboard() {
   const { snapshots, sources, symbols } = useMarketEngine();
   const [activeSymbol, setActiveSymbol] = useState("BTCUSDT");
   const [liquidityExchange, setLiquidityExchange] = useState<ExchangeFilter>("all");
+  const [liquidationExchange, setLiquidationExchange] = useState<LiquidationSource>("bybit");
   const [view, setView] = useState<DashboardView>("market");
   const snapshot = snapshots[activeSymbol];
   const history = useLiquidityHistory(activeSymbol, snapshot, liquidityExchange);
@@ -88,6 +89,7 @@ export default function Dashboard() {
           </div>
           <div className="source-cluster">
             {sources.map((source) => <SourcePill key={source.exchange} source={source} />)}
+            <span className="source-pill historical" title="OKX: capturas públicas del libro de órdenes cada minuto desde Cloudflare; respaldo REST para velas. No hay conexión WebSocket del navegador."><i /> OKX <b>1 MIN</b></span>
           </div>
         </header>
 
@@ -98,7 +100,7 @@ export default function Dashboard() {
               <div>
                 <span className="section-kicker">{activeSymbol} · PERPETUO</span>
                 <h1>{asset}<em>/USDT</em></h1>
-                <p>Datos públicos consolidados · perpetuos de Binance · Bybit · BingX · Bitunix</p>
+                <p>Perpetuos: Binance · Bybit · BingX · Bitunix en vivo; OKX vía Cloudflare para órdenes y respaldo de velas.</p>
               </div>
             </div>
             <MarketPulse symbol={activeSymbol} currentPrice={mark} />
@@ -128,11 +130,11 @@ export default function Dashboard() {
           </section>
 
           {view === "market" ? <section className="dashboard-grid market-maps section-view">
-            <LiquidityHeatmap
+            <OrderBookDepth
               key={`orderbook-${activeSymbol}`}
               symbol={activeSymbol}
               history={history}
-              candles={historicalLiquidations.candles}
+              snapshot={snapshot}
               exchange={liquidityExchange}
               onExchangeChange={setLiquidityExchange}
             />
@@ -155,9 +157,9 @@ export default function Dashboard() {
           ) : null}
 
           {view === "liquidations" ? <section className="liquidations-view section-view">
-            <ObservedLiquidationSummary symbol={activeSymbol} liquidations={snapshot?.liquidations ?? []} />
+            <ObservedLiquidationSummary key={`observed-${activeSymbol}`} symbol={activeSymbol} liquidations={snapshot?.liquidations ?? []} exchange={liquidationExchange} onExchangeChange={setLiquidationExchange} />
             <div className="lower-grid liquidation-detail-grid">
-              <LiquidationsPanel symbol={activeSymbol} snapshot={snapshot} />
+              <LiquidationsPanel symbol={activeSymbol} snapshot={snapshot} exchange={liquidationExchange} />
               <MarketQualityPanel sources={sources} snapshot={snapshot} />
             </div>
           </section> : null}
@@ -206,15 +208,15 @@ function HeroMetric({ label, value, foot, help, tone = "" }: { label: string; va
   return <div className="hero-stat"><div className="hero-stat-label"><span>{label}</span><InfoTooltip label={label} text={help} /></div><b className={tone}>{value}</b><small>{foot}</small></div>;
 }
 
-function LiquidationsPanel({ symbol, snapshot }: { symbol: string; snapshot?: MarketSnapshot }) {
-  const liquidations = snapshot?.liquidations ?? [];
+function LiquidationsPanel({ symbol, snapshot, exchange }: { symbol: string; snapshot?: MarketSnapshot; exchange: LiquidationSource }) {
+  const liquidations = (snapshot?.liquidations ?? []).filter((event) => event.exchange === exchange);
   const longTotal = sumLiquidations(liquidations, "long");
   const shortTotal = sumLiquidations(liquidations, "short");
   const max = Math.max(longTotal, shortTotal, 1);
   return (
     <section className="data-panel liquidations-panel">
       <div className="panel-heading compact-heading">
-        <div><span className="section-kicker">OBSERVED EVENTS</span><h2>Live liquidations</h2></div>
+        <div><span className="section-kicker">EVENTOS OBSERVADOS · {exchange.toUpperCase()}</span><h2>Liquidaciones en vivo</h2></div>
         <span className="event-count">{liquidations.length} / 100</span>
       </div>
       <div className="liquidation-balance">
@@ -224,7 +226,7 @@ function LiquidationsPanel({ symbol, snapshot }: { symbol: string; snapshot?: Ma
       <div className="event-list">
         {liquidations.length ? [...liquidations].reverse().slice(0, 7).map((event, index) => (
           <LiquidationRow key={`${event.exchange}-${event.ts}-${index}`} event={event} />
-        )) : <div className="list-empty"><span className="pulse-dot" />Listening for {symbol} liquidations…</div>}
+        )) : <div className="list-empty"><span className="pulse-dot" />{exchange === "gate" || exchange === "bitmex" ? "Esta fuente se resume en Cloudflare; no transmite eventos individuales a esta pestaña." : `Esperando liquidaciones de ${symbol} en ${exchange}…`}</div>}
       </div>
     </section>
   );
@@ -259,7 +261,7 @@ function MarketQualityPanel({ sources, snapshot }: { sources: SourceStatus[]; sn
         })}
         <div><span className="health-light online" /><p><b>UI publisher</b><small>Worker → React snapshots</small></p><em>150 MS</em></div>
       </div>
-      <p className="quality-note">Order books: Binance, Bybit, BingX and Bitunix. Observed liquidations: Binance partial snapshots and Bybit <code>allLiquidation</code>; BingX and Bitunix are not labeled as liquidation sources because their public documentation does not expose an equivalent feed.</p>
+      <p className="quality-note">Libros del navegador: Binance, Bybit, BingX y Bitunix. OKX: snapshots del collector de Cloudflare. Liquidaciones observadas: Bybit, Gate.io y BitMEX en Cloudflare; Binance sólo durante la sesión del navegador y con feed parcial. BingX, Bitunix y OKX no se presentan como fuentes de liquidaciones en esta versión.</p>
     </section>
   );
 }
